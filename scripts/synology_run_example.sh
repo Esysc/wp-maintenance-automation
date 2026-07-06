@@ -11,7 +11,7 @@ SSH_DIR="/volume1/homes/youruser/.ssh"
 ENV_FILE="/volume1/wp-backup/.env"
 RESTIC_PASS_FILE="/volume1/wp-backup/restic_pass"
 ARTIFACTS_DIR="/volume1/wp-backup/artifacts"
-RESTIC_REPO_DIR="/volume1/wp-backup/restic_repo"  # optional if using local repo
+RESTIC_REPO_DIR="/volume1/wp-backup/restic_repo" # optional if using local repo
 
 # Ensure required dirs/files exist
 mkdir -p "$ARTIFACTS_DIR"

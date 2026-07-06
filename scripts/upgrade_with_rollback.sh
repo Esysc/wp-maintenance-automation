@@ -10,20 +10,12 @@ if [[ -f ".env" ]]; then
   set +a
 fi
 
-require_var() {
-  local name="$1"
-  if [[ -z "${!name:-}" ]]; then
-    echo "ERROR: Required variable '$name' is not set." >&2
-    exit 1
-  fi
-}
-
-timestamp() { date +%Y%m%d_%H%M%S; }
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib.sh"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKUP_SCRIPT="$SCRIPT_DIR/backup_secure.sh"
 RESTORE_SCRIPT="$SCRIPT_DIR/restore_secure.sh"
+STAGING_REHEARSAL_SCRIPT="$SCRIPT_DIR/staging_rehearsal.sh"
 
 require_var WP_SSH_HOST
 require_var WP_SSH_USER
@@ -37,6 +29,10 @@ HEALTHCHECK_EXPECT_CODE=${HEALTHCHECK_EXPECT_CODE:-200}
 HEALTHCHECK_RETRIES=${HEALTHCHECK_RETRIES:-5}
 HEALTHCHECK_DELAY_SECONDS=${HEALTHCHECK_DELAY_SECONDS:-15}
 HEALTHCHECK_TIMEOUT_SECONDS=${HEALTHCHECK_TIMEOUT_SECONDS:-20}
+VALIDATE_BACKUP_BEFORE_UPGRADE=${VALIDATE_BACKUP_BEFORE_UPGRADE:-yes}
+RUN_STAGING_REHEARSAL_BEFORE_UPGRADE=${RUN_STAGING_REHEARSAL_BEFORE_UPGRADE:-no}
+ASK_CONFIRM_BEFORE_UPGRADE=${ASK_CONFIRM_BEFORE_UPGRADE:-yes}
+FORCE_UPGRADE=${FORCE_UPGRADE:-no}
 AUTO_RESTORE_ON_FAILURE=${AUTO_RESTORE_ON_FAILURE:-yes}
 APPLY_CONFIGS_ON_ROLLBACK=${APPLY_CONFIGS_ON_ROLLBACK:-no}
 DELETE_REMOTE_FILES_ON_ROLLBACK=${DELETE_REMOTE_FILES_ON_ROLLBACK:-no}
@@ -67,6 +63,9 @@ write_report() {
     echo ""
     echo "Step status"
     echo "- Backup: $BACKUP_STATUS"
+    echo "- Backup validation: $BACKUP_VALIDATION_STATUS"
+    echo "- Staging rehearsal: $STAGING_REHEARSAL_STATUS"
+    echo "- Upgrade approval: $UPGRADE_APPROVAL_STATUS"
     echo "- Upgrade: $UPGRADE_STATUS"
     echo "- Healthcheck: $HEALTH_STATUS"
     echo "- Rollback: $ROLLBACK_STATUS"
@@ -99,7 +98,7 @@ run_backup() {
   snapshot_file="$RUN_DIR/backup_snapshot_id.txt"
 
   log "Starting backup..."
-  if BACKUP_SNAPSHOT_FILE="$snapshot_file" bash "$BACKUP_SCRIPT" >>"$LOG_FILE" 2>&1; then
+  if BACKUP_SNAPSHOT_FILE="$snapshot_file" bash "$BACKUP_SCRIPT" >> "$LOG_FILE" 2>&1; then
     BACKUP_STATUS="ok"
 
     if [[ -s "$snapshot_file" ]]; then
@@ -120,47 +119,193 @@ run_backup() {
   return 1
 }
 
+run_backup_validation() {
+  if [[ "$VALIDATE_BACKUP_BEFORE_UPGRADE" != "yes" ]]; then
+    BACKUP_VALIDATION_STATUS="skipped"
+    log "Backup validation skipped by VALIDATE_BACKUP_BEFORE_UPGRADE=$VALIDATE_BACKUP_BEFORE_UPGRADE"
+    return 0
+  fi
+
+  local validation_dir restore_root latest_sub artifact_root db_dir wp_dir dump
+  validation_dir="$RUN_DIR/backup_validation"
+
+  log "Validating backup snapshot ${BACKUP_SNAPSHOT_ID:-latest} via local restore extract..."
+  if ! RESTORE_DIR="$validation_dir" \
+    APPLY_DB=no \
+    APPLY_FILES=no \
+    APPLY_CONFIGS=no \
+    CONFIRM_RESTORE=no \
+    bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" >> "$LOG_FILE" 2>&1; then
+    BACKUP_VALIDATION_STATUS="failed"
+    FINAL_REASON="backup validation restore extract failed"
+    return 1
+  fi
+
+  restore_root=$(ls -1 "$validation_dir" 2> /dev/null | sort | tail -n1 || true)
+  if [[ -z "$restore_root" ]]; then
+    BACKUP_VALIDATION_STATUS="failed"
+    FINAL_REASON="backup validation could not locate restored artifacts"
+    return 1
+  fi
+
+  artifact_root="$validation_dir/$restore_root"
+  if [[ -d "$artifact_root/backup_artifacts" ]]; then
+    latest_sub=$(ls -1 "$artifact_root/backup_artifacts" 2> /dev/null | sort | tail -n1 || true)
+    if [[ -n "$latest_sub" && -d "$artifact_root/backup_artifacts/$latest_sub" ]]; then
+      artifact_root="$artifact_root/backup_artifacts/$latest_sub"
+    else
+      artifact_root="$artifact_root/backup_artifacts"
+    fi
+  fi
+
+  db_dir="$artifact_root/db"
+  wp_dir="$artifact_root/wp"
+
+  if [[ ! -d "$db_dir" || ! -d "$wp_dir" ]]; then
+    BACKUP_VALIDATION_STATUS="failed"
+    FINAL_REASON="backup validation missing db or wp artifact directories"
+    return 1
+  fi
+
+  dump=$(ls -1 "$db_dir"/*.gz 2> /dev/null | sort | tail -n1 || true)
+  if [[ -z "$dump" ]]; then
+    BACKUP_VALIDATION_STATUS="failed"
+    FINAL_REASON="backup validation missing database dump"
+    return 1
+  fi
+
+  if ! gzip -t "$dump" > /dev/null 2>&1; then
+    BACKUP_VALIDATION_STATUS="failed"
+    FINAL_REASON="backup validation database dump integrity check failed"
+    return 1
+  fi
+
+  if [[ ! -f "$wp_dir/wp-config.php" ]]; then
+    BACKUP_VALIDATION_STATUS="failed"
+    FINAL_REASON="backup validation missing wp-config.php in restored files"
+    return 1
+  fi
+
+  BACKUP_VALIDATION_STATUS="ok"
+  log "Backup validation succeeded."
+  return 0
+}
+
+run_staging_rehearsal() {
+  local missing=()
+
+  if [[ "$RUN_STAGING_REHEARSAL_BEFORE_UPGRADE" != "yes" ]]; then
+    STAGING_REHEARSAL_STATUS="skipped"
+    log "Staging rehearsal skipped by RUN_STAGING_REHEARSAL_BEFORE_UPGRADE=$RUN_STAGING_REHEARSAL_BEFORE_UPGRADE"
+    return 0
+  fi
+
+  for v in STAGING_WP_SSH_HOST STAGING_WP_SSH_USER STAGING_WP_ROOT; do
+    if [[ -z "${!v:-}" ]]; then
+      missing+=("$v")
+    fi
+  done
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    STAGING_REHEARSAL_STATUS="failed"
+    FINAL_REASON="staging rehearsal required but missing vars: ${missing[*]}"
+    log "Staging rehearsal blocked: missing required variables: ${missing[*]}"
+    return 1
+  fi
+
+  log "Running staging rehearsal from snapshot ${BACKUP_SNAPSHOT_ID:-latest}..."
+  if bash "$STAGING_REHEARSAL_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" >> "$LOG_FILE" 2>&1; then
+    STAGING_REHEARSAL_STATUS="ok"
+    return 0
+  fi
+
+  STAGING_REHEARSAL_STATUS="failed"
+  FINAL_REASON="staging rehearsal failed"
+  return 1
+}
+
+run_upgrade_approval() {
+  local reply
+
+  if [[ "$FORCE_UPGRADE" == "yes" ]]; then
+    UPGRADE_APPROVAL_STATUS="forced"
+    log "Upgrade approval overridden by FORCE_UPGRADE=yes"
+    return 0
+  fi
+
+  if [[ "$ASK_CONFIRM_BEFORE_UPGRADE" != "yes" ]]; then
+    UPGRADE_APPROVAL_STATUS="not-required"
+    log "Upgrade confirmation skipped by ASK_CONFIRM_BEFORE_UPGRADE=$ASK_CONFIRM_BEFORE_UPGRADE"
+    return 0
+  fi
+
+  if [[ ! -t 0 ]]; then
+    UPGRADE_APPROVAL_STATUS="failed"
+    FINAL_REASON="upgrade confirmation required in non-interactive mode; set FORCE_UPGRADE=yes"
+    log "Cannot prompt for confirmation: non-interactive shell detected."
+    return 1
+  fi
+
+  echo ""
+  echo "Backup and validation completed for snapshot: ${BACKUP_SNAPSHOT_ID:-latest}"
+  read -r -p "Proceed with full production upgrade now? [y/N]: " reply
+  case "$reply" in
+    y | Y | yes | YES)
+      UPGRADE_APPROVAL_STATUS="approved"
+      log "Upgrade approved interactively by operator."
+      return 0
+      ;;
+    *)
+      UPGRADE_APPROVAL_STATUS="declined"
+      FINAL_STATUS="cancelled"
+      FINAL_REASON="upgrade declined by operator"
+      log "Upgrade declined by operator."
+      return 2
+      ;;
+  esac
+}
+
 run_upgrade() {
   log "Starting WordPress full upgrade with WP-CLI..."
 
-  if ! remote_wp "core update" >>"$LOG_FILE" 2>&1; then
+  if ! remote_wp "core update" >> "$LOG_FILE" 2>&1; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="core update failed"
     return 1
   fi
 
-  if ! remote_wp "plugin update --all" >>"$LOG_FILE" 2>&1; then
+  if ! remote_wp "plugin update --all" >> "$LOG_FILE" 2>&1; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="plugin update failed"
     return 1
   fi
 
-  if ! remote_wp "theme update --all" >>"$LOG_FILE" 2>&1; then
+  if ! remote_wp "theme update --all" >> "$LOG_FILE" 2>&1; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="theme update failed"
     return 1
   fi
 
   # Keep language packs aligned with updated core/plugins/themes.
-  if ! remote_wp "language core update" >>"$LOG_FILE" 2>&1; then
+  if ! remote_wp "language core update" >> "$LOG_FILE" 2>&1; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="language core update failed"
     return 1
   fi
 
-  if ! remote_wp "language plugin update --all" >>"$LOG_FILE" 2>&1; then
+  if ! remote_wp "language plugin update --all" >> "$LOG_FILE" 2>&1; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="language plugin update failed"
     return 1
   fi
 
-  if ! remote_wp "language theme update --all" >>"$LOG_FILE" 2>&1; then
+  if ! remote_wp "language theme update --all" >> "$LOG_FILE" 2>&1; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="language theme update failed"
     return 1
   fi
 
-  if ! remote_wp "core update-db" >>"$LOG_FILE" 2>&1; then
+  if ! remote_wp "core update-db" >> "$LOG_FILE" 2>&1; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="core update-db failed"
     return 1
@@ -190,7 +335,7 @@ run_healthcheck() {
       log "Healthcheck passed with status $code on attempt $attempt"
       if [[ -n "$EXTRA_POST_UPGRADE_CHECK_CMD" ]]; then
         log "Running extra post-upgrade check command"
-        if ! ssh "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $EXTRA_POST_UPGRADE_CHECK_CMD" >>"$LOG_FILE" 2>&1; then
+        if ! ssh "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
           HEALTH_STATUS="failed"
           FINAL_REASON="extra post-upgrade check failed"
           return 1
@@ -221,12 +366,12 @@ run_rollback() {
 
   log "Starting rollback using snapshot ${BACKUP_SNAPSHOT_ID:-latest}..."
   if CONFIRM_RESTORE=yes \
-     APPLY_DB=yes \
-     APPLY_FILES=yes \
-     APPLY_CONFIGS="$APPLY_CONFIGS_ON_ROLLBACK" \
-     DELETE_REMOTE_FILES="$DELETE_REMOTE_FILES_ON_ROLLBACK" \
-     REMOTE_SUDO="$REMOTE_SUDO_ON_ROLLBACK" \
-     bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" >>"$LOG_FILE" 2>&1; then
+    APPLY_DB=yes \
+    APPLY_FILES=yes \
+    APPLY_CONFIGS="$APPLY_CONFIGS_ON_ROLLBACK" \
+    DELETE_REMOTE_FILES="$DELETE_REMOTE_FILES_ON_ROLLBACK" \
+    REMOTE_SUDO="$REMOTE_SUDO_ON_ROLLBACK" \
+    bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" >> "$LOG_FILE" 2>&1; then
     ROLLBACK_STATUS="ok"
     return 0
   fi
@@ -237,6 +382,9 @@ run_rollback() {
 }
 
 BACKUP_STATUS="not-run"
+BACKUP_VALIDATION_STATUS="not-run"
+STAGING_REHEARSAL_STATUS="not-run"
+UPGRADE_APPROVAL_STATUS="not-run"
 UPGRADE_STATUS="not-run"
 HEALTH_STATUS="not-run"
 ROLLBACK_STATUS="not-run"
@@ -250,6 +398,33 @@ if ! run_backup; then
   write_report
   log "Report written to $REPORT_FILE"
   exit 1
+fi
+
+if ! run_backup_validation; then
+  write_report
+  log "Report written to $REPORT_FILE"
+  exit 1
+fi
+
+if ! run_staging_rehearsal; then
+  write_report
+  log "Report written to $REPORT_FILE"
+  exit 1
+fi
+
+set +e
+run_upgrade_approval
+approval_rc=$?
+set -e
+if [[ "$approval_rc" -eq 1 ]]; then
+  write_report
+  log "Report written to $REPORT_FILE"
+  exit 1
+fi
+if [[ "$approval_rc" -eq 2 ]]; then
+  write_report
+  log "Report written to $REPORT_FILE"
+  exit 0
 fi
 
 if ! run_upgrade; then

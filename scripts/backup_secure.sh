@@ -15,15 +15,10 @@ if [[ -f ".env" ]]; then
   set +a
 fi
 
-umask 077
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib.sh"
 
-require_var() {
-  local name="$1"
-  if [[ -z "${!name:-}" ]]; then
-    echo "ERROR: Required variable '$name' is not set." >&2
-    exit 1
-  fi
-}
+umask 077
 
 # Required configuration
 require_var WP_SSH_HOST       # e.g., example.com
@@ -43,14 +38,6 @@ RESTIC_CHECK_AFTER_BACKUP=${RESTIC_CHECK_AFTER_BACKUP:-no}
 RESTIC_CHECK_READ_DATA_SUBSET=${RESTIC_CHECK_READ_DATA_SUBSET:-}
 BACKUP_SNAPSHOT_FILE=${BACKUP_SNAPSHOT_FILE:-}
 
-require_cmd() {
-  local cmd="$1"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "ERROR: Required command '$cmd' is not installed." >&2
-    exit 1
-  fi
-}
-
 preflight_local() {
   require_cmd ssh
   require_cmd rsync
@@ -62,23 +49,34 @@ preflight_local() {
 }
 
 preflight_remote() {
-  ssh "$WP_SSH_USER@$WP_SSH_HOST" "test -f '$WP_ROOT/wp-config.php'" >/dev/null
-  ssh "$WP_SSH_USER@$WP_SSH_HOST" "command -v mysqldump >/dev/null" >/dev/null
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$WP_SSH_USER@$WP_SSH_HOST" "test -f '$WP_ROOT/wp-config.php'" > /dev/null
+  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$WP_SSH_USER@$WP_SSH_HOST" "command -v mysqldump >/dev/null" > /dev/null
 }
 
 acquire_lock() {
   mkdir -p "$BACKUP_DIR"
-  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  if ! mkdir "$LOCK_DIR" 2> /dev/null; then
+    # Check for stale lock (process not running)
+    if [[ -f "$LOCK_DIR/.pid" ]]; then
+      local pid
+      pid=$(cat "$LOCK_DIR/.pid" 2>/dev/null || true)
+      if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+        rm -rf "$LOCK_DIR"
+        mkdir -p "$LOCK_DIR"
+        echo "$$" > "$LOCK_DIR/.pid"
+        return 0
+      fi
+    fi
     echo "ERROR: Backup lock exists at $LOCK_DIR. Another backup may be running." >&2
     exit 1
   fi
+  echo "$$" > "$LOCK_DIR/.pid"
 }
 
 release_lock() {
-  rmdir "$LOCK_DIR" 2>/dev/null || true
+  rm -rf "$LOCK_DIR" 2> /dev/null || true
 }
 
-timestamp() { date +%Y%m%d_%H%M%S; }
 TS=$(timestamp)
 WORK_DIR="$BACKUP_DIR/$TS"
 DB_DIR="$WORK_DIR/db"
@@ -91,41 +89,6 @@ cleanup() {
   release_lock
 }
 trap cleanup EXIT
-
-REMOTE_WP_CONFIG="$WP_ROOT/wp-config.php"
-
-# Try to read DB_* constants via remote WP-CLI; fallback to PHP parser; fallback to grep
-read_db_config() {
-  local out
-  if ssh -o BatchMode=yes "$WP_SSH_USER@$WP_SSH_HOST" "command -v wp >/dev/null" >/dev/null 2>&1; then
-    out=$(ssh "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && wp config get DB_NAME --type=constant 2>/dev/null; wp config get DB_USER --type=constant 2>/dev/null; wp config get DB_PASSWORD --type=constant 2>/dev/null; wp config get DB_HOST --type=constant 2>/dev/null")
-    DB_NAME=$(echo "$out" | sed -n '1p')
-    DB_USER=$(echo "$out" | sed -n '2p')
-    DB_PASSWORD=$(echo "$out" | sed -n '3p')
-    DB_HOST=$(echo "$out" | sed -n '4p')
-  elif ssh -o BatchMode=yes "$WP_SSH_USER@$WP_SSH_HOST" "php -v" >/dev/null 2>&1; then
-    out=$(ssh "$WP_SSH_USER@$WP_SSH_HOST" "php -r '\
-      \$cfg=file_get_contents(\"$REMOTE_WP_CONFIG\");\
-      foreach ([\"DB_NAME\",\"DB_USER\",\"DB_PASSWORD\",\"DB_HOST\"] as \$k) {\
-        if (preg_match(\"/define\\s*\\(\\s*[\\x27\\\"]\".\$k.\"[\\x27\\\"]\\s*,\\s*[\\x27\\\"](.*?)[\\x27\\\"]\\s*\\)\\s*;/\", \$cfg, \$m)) echo \$m[1].PHP_EOL; else echo PHP_EOL;\
-      }\
-    '")
-    DB_NAME=$(echo "$out" | sed -n '1p')
-    DB_USER=$(echo "$out" | sed -n '2p')
-    DB_PASSWORD=$(echo "$out" | sed -n '3p')
-    DB_HOST=$(echo "$out" | sed -n '4p')
-  else
-    out=$(ssh "$WP_SSH_USER@$WP_SSH_HOST" "grep -E \"^define\\\('DB_(NAME|USER|PASSWORD|HOST)'\" \"$REMOTE_WP_CONFIG\"" | tr -d ' ')
-    DB_NAME=$(echo "$out" | awk -F"'" "/DB_NAME/{print \$4}")
-    DB_USER=$(echo "$out" | awk -F"'" "/DB_USER/{print \$4}")
-    DB_PASSWORD=$(echo "$out" | awk -F"'" "/DB_PASSWORD/{print \$4}")
-    DB_HOST=$(echo "$out" | awk -F"'" "/DB_HOST/{print \$4}")
-  fi
-  if [[ -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASSWORD" || -z "$DB_HOST" ]]; then
-    echo "ERROR: Could not parse DB credentials from $REMOTE_WP_CONFIG on $WP_SSH_HOST" >&2
-    exit 1
-  fi
-}
 
 write_manifest() {
   local file_count
@@ -142,7 +105,7 @@ write_manifest() {
     echo "retention_flags=$RETENTION_FLAGS"
   } > "$WORK_DIR/manifest.txt"
 
-  if command -v shasum >/dev/null 2>&1; then
+  if command -v shasum > /dev/null 2>&1; then
     shasum -a 256 "$DB_DUMP_FILE" > "$WORK_DIR/manifest.sha256"
   fi
 }
@@ -169,8 +132,9 @@ read_db_config
 
 echo "[2/4] Dumping MySQL database via SSH..."
 DB_DUMP_FILE="$DB_DIR/${TS}_${DB_NAME}.sql.gz"
-# Avoid exposing password via process args; use MYSQL_PWD env var remotely
-ssh "$WP_SSH_USER@$WP_SSH_HOST" "export MYSQL_PWD='$DB_PASSWORD'; mysqldump --single-transaction --quick --lock-tables=false -u '$DB_USER' -h '$DB_HOST' '$DB_NAME'" | gzip > "$DB_DUMP_FILE"
+# Avoid exposing password via process args; use base64-encoded password to prevent misinterpretation
+DB_PASSWORD_B64=$(echo -n "$DB_PASSWORD" | base64 | tr -d '\n')
+ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$WP_SSH_USER@$WP_SSH_HOST" "export MYSQL_PWD=\$(echo '$DB_PASSWORD_B64' | base64 --decode); mysqldump --single-transaction --quick --lock-tables=false -u '$DB_USER' -h '$DB_HOST' '$DB_NAME'" | gzip > "$DB_DUMP_FILE"
 
 echo "[3/4] Mirroring site files with rsync over SSH..."
 EXCLUDE_FLAGS=()
@@ -178,7 +142,7 @@ IFS=',' read -r -a EXCLUDE_LIST <<< "$RSYNC_EXCLUDES"
 for e in "${EXCLUDE_LIST[@]}"; do
   [[ -n "$e" ]] && EXCLUDE_FLAGS+=(--exclude "$e")
 done
-rsync -a --delete -e ssh "${EXCLUDE_FLAGS[@]}" "$WP_SSH_USER@$WP_SSH_HOST:$WP_ROOT/" "$WP_MIRROR_DIR/"
+rsync -a --delete -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "${EXCLUDE_FLAGS[@]}" "$WP_SSH_USER@$WP_SSH_HOST:$WP_ROOT/" "$WP_MIRROR_DIR/"
 
 if [[ -n "$SERVER_CONFIG_PATHS" ]]; then
   echo "[4/6] Capturing server configs..."
@@ -189,7 +153,7 @@ if [[ -n "$SERVER_CONFIG_PATHS" ]]; then
     # Preserve original directory structure under CONFIG_DIR
     dest="$CONFIG_DIR$p"
     mkdir -p "$(dirname "$dest")"
-    rsync -a -e ssh "$WP_SSH_USER@$WP_SSH_HOST:$p" "$dest" || echo "WARN: Could not sync $p"
+    rsync -a -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$WP_SSH_USER@$WP_SSH_HOST:$p" "$dest" || echo "WARN: Could not sync $p"
   done
 fi
 
@@ -210,7 +174,7 @@ export RESTIC_PASSWORD_FILE
 RESTIC_BACKUP_OUTPUT=$(restic --repo "$RESTIC_REPOSITORY" backup "$WORK_DIR" --tag "wordpress" --tag "$WP_SSH_HOST" --tag "$TS" --json)
 echo "$RESTIC_BACKUP_OUTPUT" > "$WORK_DIR/restic_backup.json"
 
-SNAPSHOT_ID=$(echo "$RESTIC_BACKUP_OUTPUT" | sed -n 's/.*"snapshot_id":"\([0-9a-f]\{8,\}\)".*/\1/p' | tail -n1)
+SNAPSHOT_ID=$(echo "$RESTIC_BACKUP_OUTPUT" | jq -r '.snapshot_id // empty' | tail -n1)
 if [[ -n "$SNAPSHOT_ID" ]]; then
   echo "$SNAPSHOT_ID" > "$WORK_DIR/restic_snapshot_id.txt"
   if [[ -n "$BACKUP_SNAPSHOT_FILE" ]]; then

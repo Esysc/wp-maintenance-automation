@@ -1,0 +1,52 @@
+name: backupwordpress-test
+
+services:
+  db:
+    image: mariadb:10.11
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wpuser
+      MYSQL_PASSWORD: wppass
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpass"]
+      interval: 5s
+      retries: 15
+
+  wp-site:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.wp
+      args:
+        WP_VERSION: ${WP_INITIAL_VERSION:-6.6.2}
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: wpuser
+      WORDPRESS_DB_PASSWORD: wppass
+      WORDPRESS_DB_NAME: wordpress
+    volumes:
+      - ./ssh/authorized_keys:/root/.ssh/authorized_keys:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost/wp-admin/install.php"]
+      interval: 5s
+      retries: 30
+
+  test-runner:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.test
+    depends_on:
+      wp-site:
+        condition: service_healthy
+    environment:
+      WP_INITIAL_VERSION: ${WP_INITIAL_VERSION:-6.6.2}
+      WP_UPGRADE_VERSION: ${WP_UPGRADE_VERSION:-6.7.2}
+    volumes:
+      - ./ssh/id_rsa:/root/.ssh/id_rsa:ro
+      - ./ssh/id_rsa.pub:/root/.ssh/id_rsa.pub:ro
+      - ./test.env:/app/.env:ro
+      - ./run.sh:/app/tests/run.sh:ro
+    command: ["bash", "/app/tests/run.sh"]
