@@ -1,0 +1,15 @@
+# Secrets
+.env
+
+# Backup and restore artifacts
+backup_artifacts/
+restore/
+var/
+
+# Container build outputs
+*.tar
+*.gz
+.dockerignore
+
+# Logs
+*.log
