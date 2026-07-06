@@ -1,0 +1,27 @@
+ARG WP_VERSION=6.6.2
+FROM wordpress:${WP_VERSION}-php8.1-apache
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    openssh-server \
+    sudo \
+    mariadb-client \
+    rsync \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN curl -o /usr/local/bin/wp-cli https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+ && chmod +x /usr/local/bin/wp-cli \
+ && printf '#!/bin/bash\n/usr/local/bin/wp-cli --allow-root --path=/var/www/html "$@"\n' > /usr/local/bin/wp \
+ && chmod +x /usr/local/bin/wp
+
+RUN mkdir -p /root/.ssh \
+ && chmod 700 /root/.ssh
+
+RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
+ && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
+
+COPY tests/wp-entrypoint.sh /usr/local/bin/wp-entrypoint.sh
+RUN chmod +x /usr/local/bin/wp-entrypoint.sh
+
+ENTRYPOINT ["wp-entrypoint.sh"]
+CMD ["apache2-foreground"]

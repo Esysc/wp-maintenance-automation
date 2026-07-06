@@ -13,3 +13,6 @@ var/
 
 # Logs
 *.log
+
+# Test SSH keys
+tests/ssh/
