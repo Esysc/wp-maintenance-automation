@@ -12,6 +12,7 @@ RUN apt-get update \
     gzip \
     tar \
     restic \
+    jq \
     coreutils \
  && rm -rf /var/lib/apt/lists/*
 

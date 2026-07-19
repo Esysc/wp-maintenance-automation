@@ -1,10 +1,8 @@
-# backupWordPress
+# WP Maintenance Automation
 
 ## Overview
 
-This repo originally contained a quick FTP-based script to back up a WordPress site to a Time Capsule. FTP sends credentials and data in cleartext and the script embedded secrets directly, so it is insecure by modern standards.
-
-This update adds a modern, secure approach based on SSH + rsync + restic. Backups are encrypted, deduplicated, and include a retention policy.
+A modern, secure WordPress site maintenance toolkit using SSH + rsync + restic. Backups are encrypted, deduplicated, and include a configurable retention policy. The toolkit also provides automated upgrades with health checks and automatic rollback, staging rehearsal before production changes, and guided restore workflows.
 
 ## Changelog
 
@@ -36,11 +34,11 @@ Features:
 - Database dump performed remotely without exposing credentials on the command line
 - File sync via `rsync` over SSH with cache exclusions
 - Retention policy (`forget --prune`) configurable via `.env`
- - Concurrency lock to prevent overlapping scheduled runs
- - Backup manifest and DB checksum artifact for easier auditing
- - Optional post-backup restic integrity check
- - Optional: capture server configs (e.g., Nginx/Apache configs, TLS certs)
- - Optional: export DNS records via a provider script (e.g., Cloudflare)
+- Concurrency lock to prevent overlapping scheduled runs
+- Backup manifest and DB checksum artifact for easier auditing
+- Optional post-backup restic integrity check
+- Optional: capture server configs (e.g., Nginx/Apache configs, TLS certs)
+- Optional: export DNS records via a provider script (e.g., Cloudflare)
 
 ### Prerequisites
 - Local: `ssh`, `rsync`, `gzip`, [`restic`](https://restic.net), `jq` installed
@@ -61,7 +59,7 @@ Required keys:
 - `RESTIC_REPOSITORY` (e.g., `b2:bucket:wp-restic` or path)
 - `RESTIC_PASSWORD_FILE` (path to a local file containing the restic repo password)
 
-1.5. Create the restic password file securely:
+2. Create the restic password file securely:
 
 ```bash
 mkdir -p "$HOME/.config/restic"
@@ -69,7 +67,7 @@ echo "your_secure_password_here" > "$HOME/.config/restic/wp_repo_password"
 chmod 600 "$HOME/.config/restic/wp_repo_password"
 ```
 
-2. Initialize restic repo if new:
+3. Initialize restic repo if new:
 
 ```bash
 export RESTIC_PASSWORD_FILE=$HOME/.config/restic/wp_repo_password
@@ -115,7 +113,7 @@ Remote apply (requires `CONFIRM_RESTORE=yes` in environment):
 # Import DB
 CONFIRM_RESTORE=yes APPLY_DB=yes bash scripts/restore_secure.sh latest
 
-# Sync files (add DELETE_REMOTE_FILES=yes to remove extraneous remote files)
+# Sync files (WARNING: DELETE_REMOTE_FILES=yes removes remote files not in the backup)
 CONFIRM_RESTORE=yes APPLY_FILES=yes DELETE_REMOTE_FILES=no bash scripts/restore_secure.sh latest
 
 # Restore server configs (with sudo on remote)
@@ -203,6 +201,7 @@ Note: `RESTIC_PASSWORD_FILE` is still required; restic’s encryption is indepen
 - Site files: full mirror of `WP_ROOT` via `rsync`.
 - Server configs (optional): set `SERVER_CONFIG_PATHS` in `.env` to copy directories like `/etc/nginx`, `/etc/apache2`, `/etc/letsencrypt`.
 - DNS (optional): set `DNS_BACKUP_SCRIPT` to a local exporter. Example Cloudflare helper: [scripts/dns_export_cloudflare.sh](scripts/dns_export_cloudflare.sh) (requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ZONE_ID`).
+- Version capture: the backup manifest records `wp_version` and `db_version` for compatibility tracking and local restoration matching the exact source environment.
 
 ### Automated Upgrade + Rollback (`scripts/upgrade_with_rollback.sh`)
 
@@ -244,8 +243,6 @@ When `RUN_STAGING_REHEARSAL_BEFORE_UPGRADE=yes`, the production workflow hard-st
 
 This script restores a snapshot to staging, upgrades staging, and runs health checks there.
 
-Run manually:
-
 ```bash
 bash scripts/staging_rehearsal.sh latest
 ```
@@ -256,7 +253,7 @@ Typical use with production workflow:
 - Set `STAGING_HEALTHCHECK_URL`
 - Run `scripts/upgrade_with_rollback.sh`
 
-Run manually:
+### Running `upgrade_with_rollback.sh`
 
 ```bash
 bash scripts/upgrade_with_rollback.sh
@@ -297,6 +294,18 @@ WP_CLI_EXTRA_ARGS=--allow-root
 
 This ensures you can reconstruct the application (files + DB), web server configs, TLS certs, and DNS records.
 
+### Local Artifacts Cleanup
+
+The `backup_artifacts` directory accumulates timestamped backup directories. Clean them up with:
+
+```bash
+task artifacts:cleanup              # remove dirs older than 30 days
+task artifacts:cleanup KEEP=7       # keep only the last 7 days
+task artifacts:cleanup KEEP=0       # remove ALL local artifacts (with 3s grace period)
+```
+
+The restic repository itself is managed separately via the retention policy set in `.env`.
+
 ### Docker / NAS
 
 You can build a container to run the backup on a NAS or any Docker host. The container includes `ssh`, `rsync`, `gzip`, `restic`, `jq`, and other required tools.
@@ -329,14 +338,14 @@ Notes:
 Synology helper:
 - See [scripts/synology_run_example.sh](scripts/synology_run_example.sh) for a Task Scheduler-friendly `docker run` example with the required mounts.
 
-## Legacy Script (removed)
+## History
 
-The previous FTP-based script has been removed due to security issues:
+This project originally contained a quick FTP-based script to back up a WordPress site to a Time Capsule. The FTP-based script was removed due to security issues:
 - FTP sends credentials and data in clear
 - Secrets were hardcoded and passed via command line
 - OS/tooling mismatch and logic errors
 
-Use the secure `backup_secure.sh` flow documented above.
+The current toolkit replaces that approach with SSH + rsync + restic for encrypted, secure backups and maintenance workflows.
 
 ## Testing
 
@@ -388,7 +397,20 @@ make clean
 
 Stops all containers, removes volumes, and deletes the generated SSH keys.
 
+### Visual Test Environment
+
+Spin up a local WordPress instance from a restic snapshot for manual inspection:
+
+```bash
+task test:visual SNAPSHOT=latest
+```
+
+The task extracts the snapshot, reads `wp_version` and `db_version` from the backup manifest, and launches matching Docker images (`wordpress:<version>` and `mariadb:<version>` or `mysql:<version>`). The database and files are then imported into the live containers.
+
+Opens a browsable WordPress at `http://localhost:8080` restored from the snapshot. Press Ctrl+C to stop and clean up.
+
 ## Notes
+
 - Store secrets outside of the repo (e.g., `.env`, `RESTIC_PASSWORD_FILE`), and do not commit them.
 - Consider server-side backups with restic or borg, pushing to a remote repository, to minimize data pulled over SSH.
- - The repo includes a `.gitignore` to keep `.env` and generated artifacts (`backup_artifacts/`, `var/`, `restore/`) out of version control.
+- The repo includes a `.gitignore` to keep `.env` and generated artifacts (`backup_artifacts/`, `var/`, `restore/`) out of version control.

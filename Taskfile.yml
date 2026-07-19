@@ -1,12 +1,14 @@
 version: '3'
 
+# All tasks run through Docker for a consistent environment.
+# Override any variable on the CLI: task backup DOCKER_IMAGE=my-image
 vars:
   DOCKER_IMAGE: wp-backup
   SSH_DIR: .ssh
   ENV_FILE: .env
-  RESTIC_PASS_FILE: .config/restic/wp_repo_password
+  # Host path to the restic password file (mounted into the container)
+  RESTIC_PASSWORD_FILE_HOST: .config/restic/wp_repo_password
   BACKUP_ARTIFACTS_DIR: backup_artifacts
-  RESTIC_REPO_DIR: /Users/andreacristalli/Backups/wp-restic
 
 tasks:
   default:
@@ -15,25 +17,24 @@ tasks:
       - task --list
 
   build:
-    desc: "Build the Docker image"
+    desc: "Build the Docker image (requires Dockerfile)"
     cmds:
       - docker build -t "{{.DOCKER_IMAGE}}" .
 
   backup:
-    desc: "Run a secure backup using Docker"
+    desc: "Run a secure backup via Docker (requires .env, SSH keys, restic password)"
     cmds:
       - |
         docker run --rm \
           -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
-          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
-          -v "{{.RESTIC_REPO_DIR}}:/restic_repo" \
           {{.DOCKER_IMAGE}}
 
   restore:
-    desc: "Restore from a snapshot (local extract or remote apply) using Docker"
+    desc: "Restore from a snapshot via Docker (pass SNAPSHOT=<id>; requires .env)"
     vars:
       SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
     cmds:
@@ -41,28 +42,27 @@ tasks:
         docker run --rm \
           -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
-          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/restore:/app/restore" \
           {{.DOCKER_IMAGE}} bash scripts/restore_secure.sh "{{.SNAPSHOT}}"
 
   upgrade:
-    desc: "Run upgrade with backup and rollback support using Docker"
+    desc: "Full upgrade with backup, healthcheck, and auto-rollback via Docker"
     cmds:
       - |
         docker run --rm \
           -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
-          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/var:/app/var" \
-          -v "{{.RESTIC_REPO_DIR}}:/restic_repo" \
           {{.DOCKER_IMAGE}} bash scripts/upgrade_with_rollback.sh
 
   rehearse:
-    desc: "Run staging rehearsal from a snapshot using Docker"
+    desc: "Rehearse upgrade on staging from a snapshot via Docker (pass SNAPSHOT=<id>)"
     vars:
       SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
     cmds:
@@ -70,72 +70,169 @@ tasks:
         docker run --rm \
           -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
-          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/var:/app/var" \
-          -v "{{.RESTIC_REPO_DIR}}:/restic_repo" \
           {{.DOCKER_IMAGE}} bash scripts/staging_rehearsal.sh "{{.SNAPSHOT}}"
 
   restic:init:
-    desc: "Initialize restic repository using Docker"
+    desc: "Initialize the restic repository via Docker (reads RESTIC_REPOSITORY from .env)"
     vars:
       REPO:
-        sh: grep '^RESTIC_REPOSITORY=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
-      PASS_FILE:
-        sh: grep '^RESTIC_PASSWORD_FILE=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
+        sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true
     cmds:
       - |
         docker run --rm \
           -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
-          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "{{.REPO}}:/restic_repo" \
           {{.DOCKER_IMAGE}} restic --repo /restic_repo init
 
   restic:snapshots:
-    desc: "List restic snapshots using Docker"
+    desc: "List restic snapshots via Docker (reads RESTIC_REPOSITORY from .env)"
     vars:
       REPO:
-        sh: grep '^RESTIC_REPOSITORY=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
-      PASS_FILE:
-        sh: grep '^RESTIC_PASSWORD_FILE=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
+        sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true
     cmds:
       - |
         docker run --rm \
           -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
-          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "{{.REPO}}:/restic_repo" \
           {{.DOCKER_IMAGE}} restic --repo /restic_repo snapshots
 
   restic:check:
-    desc: "Check restic repository integrity using Docker"
+    desc: "Check restic repository integrity via Docker (reads RESTIC_REPOSITORY from .env)"
     vars:
       REPO:
-        sh: grep '^RESTIC_REPOSITORY=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
-      PASS_FILE:
-        sh: grep '^RESTIC_PASSWORD_FILE=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
+        sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true
     cmds:
       - |
         docker run --rm \
           -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
-          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "{{.REPO}}:/restic_repo" \
           {{.DOCKER_IMAGE}} restic --repo /restic_repo check
 
   test:
-    desc: "Run the test suite"
+    desc: "Run the end-to-end test suite via Docker Compose (supports WP_INITIAL_VERSION, WP_UPGRADE_VERSION)"
     dir: tests
     cmds:
       - make test
 
+  test:visual:
+    desc: "Restore a snapshot to a local WordPress + MySQL stack for visual checking (pass SNAPSHOT=<id>)"
+    vars:
+      SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
+      RESTORE_DIR: restore_visual
+      REPO:
+        sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true
+    cmds:
+      - |
+        echo "=== Visual Test Environment ==="
+        echo "Restoring snapshot '{{.SNAPSHOT}}' to local environment..."
+
+        echo "Step 1: Extracting snapshot locally..."
+        mkdir -p {{.RESTORE_DIR}}
+        export RESTIC_REPOSITORY={{.REPO}}
+        RESTIC_PASS_HOST="$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}"
+        if [[ -f "$RESTIC_PASS_HOST" ]]; then
+          export RESTIC_PASSWORD_FILE="$RESTIC_PASS_HOST"
+        fi
+
+        restic --repo "$RESTIC_REPOSITORY" restore "{{.SNAPSHOT}}" --target "{{.RESTORE_DIR}}"
+
+        echo "Step 2: Detecting versions from backup manifest..."
+        MANIFEST=$(ls -1t {{.RESTORE_DIR}}/*/backup_artifacts/*/manifest.txt 2>/dev/null | head -n1 || true)
+        WP_VERSION=""
+        DB_VERSION_RAW=""
+        if [[ -n "$MANIFEST" ]]; then
+          WP_VERSION=$(grep '^wp_version=' "$MANIFEST" | cut -d '=' -f2-)
+          DB_VERSION_RAW=$(grep '^db_version=' "$MANIFEST" | cut -d '=' -f2-)
+          echo "  Found backup: WordPress $WP_VERSION, DB $DB_VERSION_RAW"
+          # Determine DB image and tag from version string
+          if echo "$DB_VERSION_RAW" | grep -qi maria; then
+            DB_IMAGE="mariadb"
+            DB_TAG=$(echo "$DB_VERSION_RAW" | sed 's/\([0-9]\+\.[0-9]\+\).*/\1/')
+          else
+            DB_IMAGE="mysql"
+            DB_TAG=$(echo "$DB_VERSION_RAW" | sed 's/\([0-9]\+\.[0-9]\+\).*/\1/')
+          fi
+        fi
+        export WP_VERSION="${WP_VERSION:-latest}"
+        export DB_IMAGE="${DB_IMAGE:-mariadb}"
+        export DB_TAG="${DB_TAG:-10.11}"
+        echo "  Using $DB_IMAGE:$DB_TAG for database, wordpress:$WP_VERSION for application"
+
+        echo "Step 3: Starting WordPress $WP_VERSION + $DB_IMAGE:$DB_TAG..."
+        docker compose -f tests/docker-compose.visual.yml down -v
+        docker compose -f tests/docker-compose.visual.yml up -d
+
+        echo "Step 4: Waiting for MySQL to be ready..."
+        until docker compose -f tests/docker-compose.visual.yml exec -T db mysqladmin ping -h localhost -u root -prootpass > /dev/null 2>&1; do
+          sleep 2
+        done
+
+        echo "Step 5: Importing database..."
+        DB_DUMP=$(ls -1t {{.RESTORE_DIR}}/*/backup_artifacts/*/db/*.gz 2>/dev/null | head -n1 || true)
+        if [[ -n "$DB_DUMP" ]]; then
+          echo "  Importing from: $DB_DUMP"
+          gunzip -c "$DB_DUMP" | docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u wpuser -pwppass wordpress
+        else
+          echo "  No database dump found, skipping DB import"
+        fi
+
+        echo "Step 6: Copying WordPress files..."
+        WP_DIR=$(ls -1td {{.RESTORE_DIR}}/*/backup_artifacts/*/wp 2>/dev/null | head -n1 || true)
+        if [[ -n "$WP_DIR" && -d "$WP_DIR" ]]; then
+          echo "  Copying files from: $WP_DIR"
+          docker compose -f tests/docker-compose.visual.yml cp -r "$WP_DIR/." wp-visual:/var/www/html/
+        else
+          echo "  No WordPress files found, skipping file copy"
+        fi
+
+        echo ""
+        echo "========================================="
+        echo "Visual test environment is ready!"
+        echo "Access your site at: http://localhost:8080"
+        echo "========================================="
+        echo ""
+        echo "Press Ctrl+C to stop the containers and clean up."
+        trap 'docker compose -f tests/docker-compose.visual.yml down -v; exit' INT TERM
+        docker compose -f tests/docker-compose.visual.yml logs -f
+
+  artifacts:cleanup:
+    desc: "Remove local backup artifacts older than KEEP days (default 30; set KEEP=0 to remove all)"
+    vars:
+      KEEP: '{{.KEEP | default 30}}'
+    cmds:
+      - |
+        ARTIFACTS_DIR="{{.BACKUP_ARTIFACTS_DIR}}"
+        if [[ ! -d "$ARTIFACTS_DIR" ]]; then
+          echo "No artifacts directory found at $ARTIFACTS_DIR"
+          exit 0
+        fi
+        if [[ "{{.KEEP}}" -eq 0 ]]; then
+          echo "WARNING: This will remove ALL content in $ARTIFACTS_DIR"
+          echo "Press Ctrl+C within 3 seconds to cancel..."
+          sleep 3
+          echo "Removing all artifacts..."
+          find "$ARTIFACTS_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} \; -print
+        else
+          echo "Removing artifacts in $ARTIFACTS_DIR older than {{.KEEP}} days..."
+          find "$ARTIFACTS_DIR" -mindepth 1 -maxdepth 1 -type d -mtime +{{.KEEP}} -exec rm -rf {} \; -print
+        fi
+        echo "Done."
+
   restic:password:
-    desc: "Create restic password file securely"
+    desc: "Create restic password file at ~/.config/restic/wp_repo_password (securely, chmod 600)"
     cmds:
       - |
         mkdir -p "$HOME/.config/restic"

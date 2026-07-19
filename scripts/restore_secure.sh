@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck shell=bash
 set -euo pipefail
 
 # Restore WordPress from restic backup.
@@ -14,6 +15,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
+
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 
 # Always required for restic restore
 require_var RESTIC_REPOSITORY
@@ -48,18 +51,14 @@ echo "[1/5] Restoring snapshot '$SNAPSHOT' to $TARGET..."
 export RESTIC_PASSWORD_FILE
 restic --repo "$RESTIC_REPOSITORY" restore "$SNAPSHOT" --target "$TARGET"
 
-# Locate artifact root (backup_artifacts/<ts>) under target
-ARTIFACT_ROOT=""
+ARTIFACT_ROOT="$TARGET"
 if [[ -d "$TARGET/backup_artifacts" ]]; then
-  # pick the most recent subfolder if multiple
-  latest_sub=$(ls -1 "$TARGET/backup_artifacts" | sort | tail -n1 || true)
+  latest_sub=$(ls -1t "$TARGET/backup_artifacts" 2>/dev/null | head -n1 || true)
   if [[ -n "$latest_sub" && -d "$TARGET/backup_artifacts/$latest_sub" ]]; then
     ARTIFACT_ROOT="$TARGET/backup_artifacts/$latest_sub"
   else
     ARTIFACT_ROOT="$TARGET/backup_artifacts"
   fi
-else
-  ARTIFACT_ROOT="$TARGET"
 fi
 
 DB_DIR="$ARTIFACT_ROOT/db"
@@ -85,9 +84,12 @@ restore_db() {
     return
   fi
   echo "Restoring DB from $dump to $WP_SSH_HOST/$DB_NAME..."
-  local DB_PASSWORD_B64
-  DB_PASSWORD_B64=$(echo -n "$DB_PASSWORD" | base64 | tr -d '\n')
-  gunzip -c "$dump" | ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$WP_SSH_USER@$WP_SSH_HOST" "export MYSQL_PWD=\$(echo '$DB_PASSWORD_B64' | base64 --decode); mysql -u '$DB_USER' -h '$DB_HOST' '$DB_NAME'"
+  local mysql_cnf_remote="/tmp/mysql_restore_$(timestamp).cnf"
+  local mysql_cnf_content mysql_cnf_b64
+  mysql_cnf_content=$(printf '[client]\nuser=%s\npassword=%s\nhost=%s\n' "$DB_USER" "$DB_PASSWORD" "$DB_HOST")
+  mysql_cnf_b64=$(printf '%s' "$mysql_cnf_content" | base64 | tr -d '\n')
+  gunzip -c "$dump" | ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "echo '$mysql_cnf_b64' | base64 --decode > '$mysql_cnf_remote' && mysql --defaults-extra-file='$mysql_cnf_remote' '$DB_NAME'"
+  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "rm -f '$mysql_cnf_remote'" 2>/dev/null || true
 }
 
 restore_files() {
@@ -96,8 +98,9 @@ restore_files() {
     return
   fi
   echo "Syncing files to $WP_SSH_HOST:$WP_ROOT ..."
-  flags=(-a -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new")
+  flags=(-a -e "ssh ${SSH_OPTS[*]}")
   if [[ "$DELETE_REMOTE_FILES" == "yes" ]]; then
+    echo "WARNING: --delete is enabled. Files on the remote not present in the backup will be removed."
     flags+=(--delete)
   fi
   rsync "${flags[@]}" "$WP_DIR/" "$WP_SSH_USER@$WP_SSH_HOST:$WP_ROOT/"
@@ -119,7 +122,7 @@ restore_configs() {
     rel=${entry#"$CFG_DIR"}
     dest="$rel"
     echo " - $dest"
-    rsync -a -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" --rsync-path "$RSYNC_PATH" "$entry/" "$WP_SSH_USER@$WP_SSH_HOST:$dest/"
+    rsync -a -e "ssh ${SSH_OPTS[*]}" --rsync-path "$RSYNC_PATH" "$entry/" "$WP_SSH_USER@$WP_SSH_HOST:$dest/"
   done < <(find "$CFG_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
 }
 
