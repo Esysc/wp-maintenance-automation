@@ -1,0 +1,145 @@
+version: '3'
+
+vars:
+  DOCKER_IMAGE: wp-backup
+  SSH_DIR: .ssh
+  ENV_FILE: .env
+  RESTIC_PASS_FILE: .config/restic/wp_repo_password
+  BACKUP_ARTIFACTS_DIR: backup_artifacts
+  RESTIC_REPO_DIR: /Users/andreacristalli/Backups/wp-restic
+
+tasks:
+  default:
+    desc: "Show available tasks"
+    cmds:
+      - task --list
+
+  build:
+    desc: "Build the Docker image"
+    cmds:
+      - docker build -t "{{.DOCKER_IMAGE}}" .
+
+  backup:
+    desc: "Run a secure backup using Docker"
+    cmds:
+      - |
+        docker run --rm \
+          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+          -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
+          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
+          -v "{{.RESTIC_REPO_DIR}}:/restic_repo" \
+          {{.DOCKER_IMAGE}}
+
+  restore:
+    desc: "Restore from a snapshot (local extract or remote apply) using Docker"
+    vars:
+      SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
+    cmds:
+      - |
+        docker run --rm \
+          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+          -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
+          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
+          -v "$(pwd)/restore:/app/restore" \
+          {{.DOCKER_IMAGE}} bash scripts/restore_secure.sh "{{.SNAPSHOT}}"
+
+  upgrade:
+    desc: "Run upgrade with backup and rollback support using Docker"
+    cmds:
+      - |
+        docker run --rm \
+          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+          -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
+          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
+          -v "$(pwd)/var:/app/var" \
+          -v "{{.RESTIC_REPO_DIR}}:/restic_repo" \
+          {{.DOCKER_IMAGE}} bash scripts/upgrade_with_rollback.sh
+
+  rehearse:
+    desc: "Run staging rehearsal from a snapshot using Docker"
+    vars:
+      SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
+    cmds:
+      - |
+        docker run --rm \
+          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+          -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
+          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
+          -v "$(pwd)/var:/app/var" \
+          -v "{{.RESTIC_REPO_DIR}}:/restic_repo" \
+          {{.DOCKER_IMAGE}} bash scripts/staging_rehearsal.sh "{{.SNAPSHOT}}"
+
+  restic:init:
+    desc: "Initialize restic repository using Docker"
+    vars:
+      REPO:
+        sh: grep '^RESTIC_REPOSITORY=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
+      PASS_FILE:
+        sh: grep '^RESTIC_PASSWORD_FILE=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
+    cmds:
+      - |
+        docker run --rm \
+          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+          -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
+          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -v "{{.REPO}}:/restic_repo" \
+          {{.DOCKER_IMAGE}} restic --repo /restic_repo init
+
+  restic:snapshots:
+    desc: "List restic snapshots using Docker"
+    vars:
+      REPO:
+        sh: grep '^RESTIC_REPOSITORY=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
+      PASS_FILE:
+        sh: grep '^RESTIC_PASSWORD_FILE=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
+    cmds:
+      - |
+        docker run --rm \
+          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+          -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
+          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -v "{{.REPO}}:/restic_repo" \
+          {{.DOCKER_IMAGE}} restic --repo /restic_repo snapshots
+
+  restic:check:
+    desc: "Check restic repository integrity using Docker"
+    vars:
+      REPO:
+        sh: grep '^RESTIC_REPOSITORY=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
+      PASS_FILE:
+        sh: grep '^RESTIC_PASSWORD_FILE=' .env | cut -d '=' -f2- | sed 's/^"//;s/"$//'
+    cmds:
+      - |
+        docker run --rm \
+          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+          -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
+          -v "$HOME/{{.RESTIC_PASS_FILE}}:/app/restic_pass:ro" \
+          -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -v "{{.REPO}}:/restic_repo" \
+          {{.DOCKER_IMAGE}} restic --repo /restic_repo check
+
+  test:
+    desc: "Run the test suite"
+    dir: tests
+    cmds:
+      - make test
+
+  restic:password:
+    desc: "Create restic password file securely"
+    cmds:
+      - |
+        mkdir -p "$HOME/.config/restic"
+        echo "Enter your restic password:"
+        read -s PASS && echo ""
+        echo "$PASS" > "$HOME/.config/restic/wp_repo_password"
+        chmod 600 "$HOME/.config/restic/wp_repo_password"
