@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck shell=bash
 set -euo pipefail
 
 # Modern, secure WordPress backup using SSH + rsync + restic.
@@ -19,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 umask 077
+
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 
 # Required configuration
 require_var WP_SSH_HOST       # e.g., example.com
@@ -43,32 +46,32 @@ preflight_local() {
   require_cmd rsync
   require_cmd gzip
   require_cmd restic
+  require_cmd jq
+  require_cmd base64
   require_cmd awk
   require_cmd sed
   require_cmd grep
 }
 
 preflight_remote() {
-  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$WP_SSH_USER@$WP_SSH_HOST" "test -f '$WP_ROOT/wp-config.php'" > /dev/null
-  ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$WP_SSH_USER@$WP_SSH_HOST" "command -v mysqldump >/dev/null" > /dev/null
+  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "test -f '$WP_ROOT/wp-config.php'" > /dev/null
+  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "command -v mysqldump >/dev/null" > /dev/null
 }
 
 acquire_lock() {
   mkdir -p "$BACKUP_DIR"
   if ! mkdir "$LOCK_DIR" 2> /dev/null; then
-    # Check for stale lock (process not running)
-    if [[ -f "$LOCK_DIR/.pid" ]]; then
-      local pid
-      pid=$(cat "$LOCK_DIR/.pid" 2>/dev/null || true)
-      if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
-        rm -rf "$LOCK_DIR"
-        mkdir -p "$LOCK_DIR"
-        echo "$$" > "$LOCK_DIR/.pid"
-        return 0
-      fi
+    local pid
+    pid=$(cat "$LOCK_DIR/.pid" 2>/dev/null || true)
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+      rm -rf "$LOCK_DIR"
+    elif [[ -z "$pid" ]]; then
+      rm -rf "$LOCK_DIR"
+    else
+      echo "ERROR: Backup lock exists at $LOCK_DIR. Another backup may be running (PID $pid)." >&2
+      exit 1
     fi
-    echo "ERROR: Backup lock exists at $LOCK_DIR. Another backup may be running." >&2
-    exit 1
+    mkdir -p "$LOCK_DIR"
   fi
   echo "$$" > "$LOCK_DIR/.pid"
 }
@@ -85,20 +88,26 @@ CONFIG_DIR="$WORK_DIR/server_config"
 DNS_DIR="$WORK_DIR/dns"
 mkdir -p "$DB_DIR" "$WP_MIRROR_DIR"
 
+MYSQL_CNF_REMOTE="/tmp/mysql_backup_${TS}.cnf"
+
 cleanup() {
   release_lock
+  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "rm -f '$MYSQL_CNF_REMOTE'" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 write_manifest() {
-  local file_count
+  local file_count wp_version
   file_count=$(find "$WP_MIRROR_DIR" -type f | wc -l | tr -d ' ')
+  wp_version=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && wp core version 2>/dev/null" || echo "unknown")
   {
     echo "timestamp=$TS"
     echo "host=$WP_SSH_HOST"
     echo "wp_root=$WP_ROOT"
+    echo "wp_version=$wp_version"
     echo "db_name=$DB_NAME"
     echo "db_host=$DB_HOST"
+    echo "db_version=$DB_VERSION"
     echo "db_dump_file=$(basename "$DB_DUMP_FILE")"
     echo "file_count=$file_count"
     echo "rsync_excludes=$RSYNC_EXCLUDES"
@@ -132,9 +141,14 @@ read_db_config
 
 echo "[2/4] Dumping MySQL database via SSH..."
 DB_DUMP_FILE="$DB_DIR/${TS}_${DB_NAME}.sql.gz"
-# Avoid exposing password via process args; use base64-encoded password to prevent misinterpretation
-DB_PASSWORD_B64=$(echo -n "$DB_PASSWORD" | base64 | tr -d '\n')
-ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$WP_SSH_USER@$WP_SSH_HOST" "export MYSQL_PWD=\$(echo '$DB_PASSWORD_B64' | base64 --decode); mysqldump --single-transaction --quick --lock-tables=false -u '$DB_USER' -h '$DB_HOST' '$DB_NAME'" | gzip > "$DB_DUMP_FILE"
+# Use a temporary MySQL config file on the remote host to avoid exposing the
+# password in process tables (visible via ps aux on the remote server).
+MYSQL_CNF_CONTENT=$(printf '[client]\nuser=%s\npassword=%s\nhost=%s\n' "$DB_USER" "$DB_PASSWORD" "$DB_HOST")
+MYSQL_CNF_B64=$(printf '%s' "$MYSQL_CNF_CONTENT" | base64 | tr -d '\n')
+ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "echo '$MYSQL_CNF_B64' | base64 --decode > '$MYSQL_CNF_REMOTE' && mysqldump --defaults-extra-file='$MYSQL_CNF_REMOTE' --single-transaction --quick --lock-tables=false '$DB_NAME'" | gzip > "$DB_DUMP_FILE"
+
+# Capture DB server version while the temp config is still on the remote
+DB_VERSION=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "mysql --defaults-extra-file='$MYSQL_CNF_REMOTE' -N -e 'SELECT VERSION()'" 2>/dev/null || echo "unknown")
 
 echo "[3/4] Mirroring site files with rsync over SSH..."
 EXCLUDE_FLAGS=()
@@ -142,7 +156,7 @@ IFS=',' read -r -a EXCLUDE_LIST <<< "$RSYNC_EXCLUDES"
 for e in "${EXCLUDE_LIST[@]}"; do
   [[ -n "$e" ]] && EXCLUDE_FLAGS+=(--exclude "$e")
 done
-rsync -a --delete -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "${EXCLUDE_FLAGS[@]}" "$WP_SSH_USER@$WP_SSH_HOST:$WP_ROOT/" "$WP_MIRROR_DIR/"
+rsync -a --delete -e "ssh ${SSH_OPTS[*]}" "${EXCLUDE_FLAGS[@]}" "$WP_SSH_USER@$WP_SSH_HOST:$WP_ROOT/" "$WP_MIRROR_DIR/"
 
 if [[ -n "$SERVER_CONFIG_PATHS" ]]; then
   echo "[4/6] Capturing server configs..."
@@ -150,10 +164,9 @@ if [[ -n "$SERVER_CONFIG_PATHS" ]]; then
   IFS=',' read -r -a CFG_LIST <<< "$SERVER_CONFIG_PATHS"
   for p in "${CFG_LIST[@]}"; do
     [[ -z "$p" ]] && continue
-    # Preserve original directory structure under CONFIG_DIR
     dest="$CONFIG_DIR$p"
     mkdir -p "$(dirname "$dest")"
-    rsync -a -e "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new" "$WP_SSH_USER@$WP_SSH_HOST:$p" "$dest" || echo "WARN: Could not sync $p"
+    rsync -a -e "ssh ${SSH_OPTS[*]}" "$WP_SSH_USER@$WP_SSH_HOST:$p" "$dest" || echo "WARN: Could not sync $p"
   done
 fi
 
@@ -183,7 +196,8 @@ if [[ -n "$SNAPSHOT_ID" ]]; then
 fi
 
 echo "Applying retention policy: $RETENTION_FLAGS"
-restic --repo "$RESTIC_REPOSITORY" forget --prune $RETENTION_FLAGS
+read -ra RETENTION_FLAGS_ARR <<< "$RETENTION_FLAGS"
+restic --repo "$RESTIC_REPOSITORY" forget --prune "${RETENTION_FLAGS_ARR[@]}"
 
 run_restic_check
 

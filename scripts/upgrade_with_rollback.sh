@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck shell=bash
 set -euo pipefail
 
 # Orchestrates: backup -> full WordPress upgrade -> health checks -> optional rollback.
@@ -141,7 +142,7 @@ run_backup_validation() {
     return 1
   fi
 
-  restore_root=$(ls -1 "$validation_dir" 2> /dev/null | sort | tail -n1 || true)
+  restore_root=$(ls -1t "$validation_dir" 2> /dev/null | head -n1 || true)
   if [[ -z "$restore_root" ]]; then
     BACKUP_VALIDATION_STATUS="failed"
     FINAL_REASON="backup validation could not locate restored artifacts"
@@ -150,7 +151,7 @@ run_backup_validation() {
 
   artifact_root="$validation_dir/$restore_root"
   if [[ -d "$artifact_root/backup_artifacts" ]]; then
-    latest_sub=$(ls -1 "$artifact_root/backup_artifacts" 2> /dev/null | sort | tail -n1 || true)
+    latest_sub=$(ls -1t "$artifact_root/backup_artifacts" 2> /dev/null | head -n1 || true)
     if [[ -n "$latest_sub" && -d "$artifact_root/backup_artifacts/$latest_sub" ]]; then
       artifact_root="$artifact_root/backup_artifacts/$latest_sub"
     else

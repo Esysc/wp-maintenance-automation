@@ -29,23 +29,18 @@ read_db_config() {
     DB_USER=$(echo "$out" | sed -n '2p')
     DB_PASSWORD=$(echo "$out" | sed -n '3p')
     DB_HOST=$(echo "$out" | sed -n '4p')
-  elif ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$remote_host" "php -v" > /dev/null 2>&1; then
-    out=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$remote_host" "php -r '\
-      \$cfg=file_get_contents(\"$remote_wp_config\");\
-      foreach ([\"DB_NAME\",\"DB_USER\",\"DB_PASSWORD\",\"DB_HOST\"] as \$k) {\
-        if (preg_match(\"/define\\s*\\(\\s*[\\x27\\\"]\".\$k.\"[\\x27\\\"]\\s*,\\s*[\\x27\\\"](.*?)[\\x27\\\"]\\s*\\)\\s*;/\", \$cfg, \$m)) echo \$m[1].PHP_EOL; else echo PHP_EOL;\
-      }\
-    '")
+  elif ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$remote_host" "php -r 'require \"$remote_wp_config\"; echo DB_NAME . \"\n\" . DB_USER . \"\n\" . DB_PASSWORD . \"\n\" . DB_HOST;'" > /dev/null 2>&1; then
+    out=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$remote_host" "php -r 'require \"$remote_wp_config\"; echo DB_NAME . \"\n\" . DB_USER . \"\n\" . DB_PASSWORD . \"\n\" . DB_HOST;'")
     DB_NAME=$(echo "$out" | sed -n '1p')
     DB_USER=$(echo "$out" | sed -n '2p')
     DB_PASSWORD=$(echo "$out" | sed -n '3p')
     DB_HOST=$(echo "$out" | sed -n '4p')
   else
-    out=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$remote_host" "grep -E \"^define\\\('DB_(NAME|USER|PASSWORD|HOST)'\" \"$remote_wp_config\"" | tr -d ' ')
-    DB_NAME=$(echo "$out" | awk -F"'" "/DB_NAME/{print \$4}")
-    DB_USER=$(echo "$out" | awk -F"'" "/DB_USER/{print \$4}")
-    DB_PASSWORD=$(echo "$out" | awk -F"'" "/DB_PASSWORD/{print \$4}")
-    DB_HOST=$(echo "$out" | awk -F"'" "/DB_HOST/{print \$4}")
+    out=$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$remote_host" "grep -E \"^define\\('DB_(NAME|USER|PASSWORD|HOST)'\" \"$remote_wp_config\"")
+    DB_NAME=$(echo "$out" | sed -n "s/^define('DB_NAME',[[:space:]]*'\(.*\)');/\1/p" | sed "s/\\\\'/'/g")
+    DB_USER=$(echo "$out" | sed -n "s/^define('DB_USER',[[:space:]]*'\(.*\)');/\1/p" | sed "s/\\\\'/'/g")
+    DB_PASSWORD=$(echo "$out" | sed -n "s/^define('DB_PASSWORD',[[:space:]]*'\(.*\)');/\1/p" | sed "s/\\\\'/'/g")
+    DB_HOST=$(echo "$out" | sed -n "s/^define('DB_HOST',[[:space:]]*'\(.*\)');/\1/p" | sed "s/\\\\'/'/g")
   fi
 
   if [[ -z "$DB_NAME" || -z "$DB_USER" || -z "$DB_PASSWORD" || -z "$DB_HOST" ]]; then

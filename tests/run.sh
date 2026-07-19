@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
+# shellcheck shell=bash
 set -euo pipefail
 
 TEST_PASS=0
 TEST_FAIL=0
 TEST_SKIP=0
+TEST_CLEANUP_DONE=false
+
+cleanup_test() {
+  if [[ "$TEST_CLEANUP_DONE" == "true" ]]; then
+    return
+  fi
+  TEST_CLEANUP_DONE=true
+  rm -f /tmp/restic-pass /tmp/restic-repo /tmp/backup_snapshot_id.txt /tmp/backup_output.log /tmp/restore_output.log /tmp/restore_apply.log /tmp/snapshots.log
+  rm -rf /tmp/backup_artifacts /tmp/restore_output /tmp/id_rsa
+}
+trap cleanup_test EXIT
 
 pass() {
   TEST_PASS=$((TEST_PASS + 1))

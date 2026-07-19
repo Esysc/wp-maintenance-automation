@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck shell=bash
 set -euo pipefail
 
 mkdir -p /run/sshd /etc/ssh/sshd_config.d
