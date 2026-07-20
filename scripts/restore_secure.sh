@@ -55,12 +55,13 @@ export RESTIC_PASSWORD_FILE
 restic --repo "$RESTIC_REPOSITORY" restore "$SNAPSHOT" --target "$TARGET"
 
 ARTIFACT_ROOT="$TARGET"
-if [[ -d "$TARGET/backup_artifacts" ]]; then
-  latest_sub=$(ls -1t "$TARGET/backup_artifacts" 2> /dev/null | head -n1 || true)
-  if [[ -n "$latest_sub" && -d "$TARGET/backup_artifacts/$latest_sub" ]]; then
-    ARTIFACT_ROOT="$TARGET/backup_artifacts/$latest_sub"
+found=$(find "$TARGET" -type d -name "backup_artifacts" 2> /dev/null | head -n1 || true)
+if [[ -n "$found" ]]; then
+  latest_sub=$(ls -1t "$found" 2> /dev/null | head -n1 || true)
+  if [[ -n "$latest_sub" && -d "$found/$latest_sub" ]]; then
+    ARTIFACT_ROOT="$found/$latest_sub"
   else
-    ARTIFACT_ROOT="$TARGET/backup_artifacts"
+    ARTIFACT_ROOT="$found"
   fi
 fi
 
@@ -102,7 +103,7 @@ restore_files() {
     return
   fi
   echo "Syncing files to $WP_SSH_HOST:$WP_ROOT ..."
-  flags=(-a --no-owner --no-group -e "ssh ${SSH_OPTS[*]}")
+  flags=(-a --no-owner --no-group --timeout=60 -e "ssh ${SSH_OPTS[*]}")
   if [[ "$DELETE_REMOTE_FILES" == "yes" ]]; then
     echo "WARNING: --delete is enabled. Files on the remote not present in the backup will be removed."
     flags+=(--delete)
@@ -126,7 +127,7 @@ restore_configs() {
     rel=${entry#"$CFG_DIR"}
     dest="$rel"
     echo " - $dest"
-    rsync -a --no-owner --no-group -e "ssh ${SSH_OPTS[*]}" --rsync-path "$RSYNC_PATH" "$entry/" "$WP_SSH_USER@$WP_SSH_HOST:$dest/"
+    rsync -a --no-owner --no-group --timeout=60 -e "ssh ${SSH_OPTS[*]}" --rsync-path "$RSYNC_PATH" "$entry/" "$WP_SSH_USER@$WP_SSH_HOST:$dest/"
   done < <(find "$CFG_DIR" -mindepth 1 -maxdepth 1 -type d -print0)
 }
 
