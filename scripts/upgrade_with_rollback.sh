@@ -161,12 +161,13 @@ run_backup_validation() {
   fi
 
   artifact_root="$validation_dir/$restore_root"
-  if [[ -d "$artifact_root/backup_artifacts" ]]; then
-    latest_sub=$(ls -1t "$artifact_root/backup_artifacts" 2> /dev/null | head -n1 || true)
-    if [[ -n "$latest_sub" && -d "$artifact_root/backup_artifacts/$latest_sub" ]]; then
-      artifact_root="$artifact_root/backup_artifacts/$latest_sub"
+  found=$(find "$artifact_root" -type d -name "backup_artifacts" 2> /dev/null | head -n1 || true)
+  if [[ -n "$found" ]]; then
+    latest_sub=$(ls -1t "$found" 2> /dev/null | head -n1 || true)
+    if [[ -n "$latest_sub" && -d "$found/$latest_sub" ]]; then
+      artifact_root="$found/$latest_sub"
     else
-      artifact_root="$artifact_root/backup_artifacts"
+      artifact_root="$found"
     fi
   fi
 

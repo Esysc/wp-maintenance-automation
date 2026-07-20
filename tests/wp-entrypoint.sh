@@ -12,6 +12,7 @@ if [[ -f /root/.ssh/authorized_keys ]]; then
 fi
 
 env | grep '^WORDPRESS_' > /root/.ssh/environment 2> /dev/null || true
+chmod 600 /root/.ssh/environment
 
 cat > /etc/ssh/sshd_config.d/override.conf << EOF
 AuthorizedKeysFile /tmp/authorized_keys

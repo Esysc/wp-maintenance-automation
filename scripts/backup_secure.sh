@@ -59,6 +59,8 @@ preflight_local() {
 preflight_remote() {
   ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "test -f '$WP_ROOT/wp-config.php'" > /dev/null
   ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "command -v mysqldump >/dev/null" > /dev/null
+  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "command -v mysql >/dev/null" > /dev/null
+  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "command -v base64 >/dev/null" > /dev/null
 }
 
 acquire_lock() {
@@ -78,7 +80,10 @@ acquire_lock() {
       echo "ERROR: Backup lock exists at $LOCK_DIR. Another backup may be running (PID $pid)." >&2
       exit 1
     fi
-    mkdir -p "$LOCK_DIR"
+    if ! mkdir "$LOCK_DIR" 2> /dev/null; then
+      echo "ERROR: Could not acquire lock at $LOCK_DIR (race with another process)." >&2
+      exit 1
+    fi
   fi
   echo "$$" > "$LOCK_DIR/.pid"
 }
@@ -163,7 +168,7 @@ IFS=',' read -r -a EXCLUDE_LIST <<< "$RSYNC_EXCLUDES"
 for e in "${EXCLUDE_LIST[@]}"; do
   [[ -n "$e" ]] && EXCLUDE_FLAGS+=(--exclude "$e")
 done
-rsync -a --no-owner --no-group --delete -e "ssh ${SSH_OPTS[*]}" "${EXCLUDE_FLAGS[@]}" "$WP_SSH_USER@$WP_SSH_HOST:$WP_ROOT/" "$WP_MIRROR_DIR/"
+rsync -a --no-owner --no-group --delete --timeout=60 --info=progress2 -e "ssh ${SSH_OPTS[*]}" "${EXCLUDE_FLAGS[@]}" "$WP_SSH_USER@$WP_SSH_HOST:$WP_ROOT/" "$WP_MIRROR_DIR/"
 
 if [[ -n "$SERVER_CONFIG_PATHS" ]]; then
   echo "[4/6] Capturing server configs..."
@@ -173,7 +178,7 @@ if [[ -n "$SERVER_CONFIG_PATHS" ]]; then
     [[ -z "$p" ]] && continue
     dest="$CONFIG_DIR$p"
     mkdir -p "$(dirname "$dest")"
-    rsync -a --no-owner --no-group -e "ssh ${SSH_OPTS[*]}" "$WP_SSH_USER@$WP_SSH_HOST:$p" "$dest" || echo "WARN: Could not sync $p"
+    rsync -a --no-owner --no-group --timeout=60 -e "ssh ${SSH_OPTS[*]}" "$WP_SSH_USER@$WP_SSH_HOST:$p" "$dest" || echo "WARN: Could not sync $p"
   done
 fi
 
