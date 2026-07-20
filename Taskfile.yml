@@ -4,7 +4,12 @@ version: '3'
 # Override any variable on the CLI: task backup DOCKER_IMAGE=my-image
 vars:
   DOCKER_IMAGE: wp-backup
-  SSH_DIR: .ssh
+  SSH_KEY:
+    sh: |
+      if [ -f "$HOME/.ssh/id_ed25519" ]; then echo "$HOME/.ssh/id_ed25519"; \
+      elif [ -f "$HOME/.ssh/id_rsa" ]; then echo "$HOME/.ssh/id_rsa"; \
+      elif [ -f "$HOME/.ssh/id_ecdsa" ]; then echo "$HOME/.ssh/id_ecdsa"; \
+      else echo "$HOME/.ssh/id_rsa"; fi
   ENV_FILE: .env
   # Host path to the restic password file (mounted into the container)
   RESTIC_PASSWORD_FILE_HOST: .config/restic/wp_repo_password
@@ -25,13 +30,13 @@ tasks:
     desc: "Run a secure backup via Docker (requires .env, SSH keys, restic password)"
     cmds:
       - |
-        docker run --rm \
-          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+        docker run --rm -i \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
-          {{.DOCKER_IMAGE}}
+          -v "$(pwd)/scripts:/app/scripts:ro" \
+          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/backup_secure.sh' < "{{.SSH_KEY}}"
 
   restore:
     desc: "Restore from a snapshot via Docker (pass SNAPSHOT=<id>; requires .env)"
@@ -39,27 +44,27 @@ tasks:
       SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
     cmds:
       - |
-        docker run --rm \
-          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+        docker run --rm -i \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/restore:/app/restore" \
-          {{.DOCKER_IMAGE}} bash scripts/restore_secure.sh "{{.SNAPSHOT}}"
+          -v "$(pwd)/scripts:/app/scripts:ro" \
+          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/restore_secure.sh "{{.SNAPSHOT}}"' < "{{.SSH_KEY}}"
 
   upgrade:
     desc: "Full upgrade with backup, healthcheck, and auto-rollback via Docker"
     cmds:
       - |
-        docker run --rm \
-          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+        docker run --rm -i \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/var:/app/var" \
-          {{.DOCKER_IMAGE}} bash scripts/upgrade_with_rollback.sh
+          -v "$(pwd)/scripts:/app/scripts:ro" \
+          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/upgrade_with_rollback.sh' < "{{.SSH_KEY}}"
 
   rehearse:
     desc: "Rehearse upgrade on staging from a snapshot via Docker (pass SNAPSHOT=<id>)"
@@ -67,14 +72,14 @@ tasks:
       SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
     cmds:
       - |
-        docker run --rm \
-          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
+        docker run --rm -i \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/var:/app/var" \
-          {{.DOCKER_IMAGE}} bash scripts/staging_rehearsal.sh "{{.SNAPSHOT}}"
+          -v "$(pwd)/scripts:/app/scripts:ro" \
+          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/staging_rehearsal.sh "{{.SNAPSHOT}}"' < "{{.SSH_KEY}}"
 
   restic:init:
     desc: "Initialize the restic repository via Docker (reads RESTIC_REPOSITORY from .env)"
@@ -84,7 +89,6 @@ tasks:
     cmds:
       - |
         docker run --rm \
-          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
@@ -99,7 +103,6 @@ tasks:
     cmds:
       - |
         docker run --rm \
-          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
@@ -114,7 +117,6 @@ tasks:
     cmds:
       - |
         docker run --rm \
-          -v "$HOME/{{.SSH_DIR}}:/root/.ssh:ro" \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \

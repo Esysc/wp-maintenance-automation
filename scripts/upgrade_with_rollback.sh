@@ -77,9 +77,19 @@ write_report() {
   } > "$REPORT_FILE"
 }
 
+ssh_opts_for_host() {
+  local port_var="${1:-WP_SSH_PORT}"
+  local opts=()
+  if [[ -n "${!port_var:-}" ]]; then
+    opts+=(-p "${!port_var}")
+  fi
+  echo "${opts[@]}"
+}
+
 remote_wp() {
   local wp_args="$1"
-  ssh "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS $wp_args"
+  # shellcheck disable=SC2046
+  ssh $(ssh_opts_for_host WP_SSH_PORT) "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS $wp_args"
 }
 
 derive_healthcheck_url() {
@@ -88,7 +98,8 @@ derive_healthcheck_url() {
   fi
 
   local detected
-  detected=$(ssh "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS option get home 2>/dev/null" || true)
+  # shellcheck disable=SC2046
+  detected=$(ssh $(ssh_opts_for_host WP_SSH_PORT) "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS option get home 2>/dev/null" || true)
   if [[ -n "$detected" ]]; then
     HEALTHCHECK_URL="$detected"
   fi
@@ -336,7 +347,8 @@ run_healthcheck() {
       log "Healthcheck passed with status $code on attempt $attempt"
       if [[ -n "$EXTRA_POST_UPGRADE_CHECK_CMD" ]]; then
         log "Running extra post-upgrade check command"
-        if ! ssh "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
+        # shellcheck disable=SC2046
+        if ! ssh $(ssh_opts_for_host WP_SSH_PORT) "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
           HEALTH_STATUS="failed"
           FINAL_REASON="extra post-upgrade check failed"
           return 1

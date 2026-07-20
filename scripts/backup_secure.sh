@@ -22,6 +22,9 @@ source "$SCRIPT_DIR/lib.sh"
 umask 077
 
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+if [[ -n "${WP_SSH_PORT:-}" ]]; then
+  SSH_OPTS+=(-o "Port=${WP_SSH_PORT}")
+fi
 
 # Required configuration
 require_var WP_SSH_HOST       # e.g., example.com
@@ -62,10 +65,14 @@ acquire_lock() {
   mkdir -p "$BACKUP_DIR"
   if ! mkdir "$LOCK_DIR" 2> /dev/null; then
     local pid
-    pid=$(cat "$LOCK_DIR/.pid" 2>/dev/null || true)
-    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    pid=$(cat "$LOCK_DIR/.pid" 2> /dev/null || true)
+    if [[ -z "$pid" ]]; then
       rm -rf "$LOCK_DIR"
-    elif [[ -z "$pid" ]]; then
+    elif [[ "$pid" -eq "$$" ]]; then
+      # Previous run wrote PID 1 (Docker) and this container also has PID 1;
+      # treat as stale since lock dir is still present.
+      rm -rf "$LOCK_DIR"
+    elif ! kill -0 "$pid" 2> /dev/null; then
       rm -rf "$LOCK_DIR"
     else
       echo "ERROR: Backup lock exists at $LOCK_DIR. Another backup may be running (PID $pid)." >&2
@@ -92,7 +99,7 @@ MYSQL_CNF_REMOTE="/tmp/mysql_backup_${TS}.cnf"
 
 cleanup() {
   release_lock
-  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "rm -f '$MYSQL_CNF_REMOTE'" 2>/dev/null || true
+  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "rm -f '$MYSQL_CNF_REMOTE'" 2> /dev/null || true
 }
 trap cleanup EXIT
 
@@ -148,7 +155,7 @@ MYSQL_CNF_B64=$(printf '%s' "$MYSQL_CNF_CONTENT" | base64 | tr -d '\n')
 ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "echo '$MYSQL_CNF_B64' | base64 --decode > '$MYSQL_CNF_REMOTE' && mysqldump --defaults-extra-file='$MYSQL_CNF_REMOTE' --single-transaction --quick --lock-tables=false '$DB_NAME'" | gzip > "$DB_DUMP_FILE"
 
 # Capture DB server version while the temp config is still on the remote
-DB_VERSION=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "mysql --defaults-extra-file='$MYSQL_CNF_REMOTE' -N -e 'SELECT VERSION()'" 2>/dev/null || echo "unknown")
+DB_VERSION=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "mysql --defaults-extra-file='$MYSQL_CNF_REMOTE' -N -e 'SELECT VERSION()'" 2> /dev/null || echo "unknown")
 
 echo "[3/4] Mirroring site files with rsync over SSH..."
 EXCLUDE_FLAGS=()
@@ -156,7 +163,7 @@ IFS=',' read -r -a EXCLUDE_LIST <<< "$RSYNC_EXCLUDES"
 for e in "${EXCLUDE_LIST[@]}"; do
   [[ -n "$e" ]] && EXCLUDE_FLAGS+=(--exclude "$e")
 done
-rsync -a --delete -e "ssh ${SSH_OPTS[*]}" "${EXCLUDE_FLAGS[@]}" "$WP_SSH_USER@$WP_SSH_HOST:$WP_ROOT/" "$WP_MIRROR_DIR/"
+rsync -a --no-owner --no-group --delete -e "ssh ${SSH_OPTS[*]}" "${EXCLUDE_FLAGS[@]}" "$WP_SSH_USER@$WP_SSH_HOST:$WP_ROOT/" "$WP_MIRROR_DIR/"
 
 if [[ -n "$SERVER_CONFIG_PATHS" ]]; then
   echo "[4/6] Capturing server configs..."
@@ -166,7 +173,7 @@ if [[ -n "$SERVER_CONFIG_PATHS" ]]; then
     [[ -z "$p" ]] && continue
     dest="$CONFIG_DIR$p"
     mkdir -p "$(dirname "$dest")"
-    rsync -a -e "ssh ${SSH_OPTS[*]}" "$WP_SSH_USER@$WP_SSH_HOST:$p" "$dest" || echo "WARN: Could not sync $p"
+    rsync -a --no-owner --no-group -e "ssh ${SSH_OPTS[*]}" "$WP_SSH_USER@$WP_SSH_HOST:$p" "$dest" || echo "WARN: Could not sync $p"
   done
 fi
 
