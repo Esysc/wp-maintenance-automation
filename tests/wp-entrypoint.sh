@@ -1,18 +1,12 @@
-#!/bin/bash
-# shellcheck shell=bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-mkdir -p /run/sshd /etc/ssh/sshd_config.d
-
-mkdir -p /root/.ssh
+mkdir -p /run/sshd /etc/ssh/sshd_config.d /root/.ssh
 
 if [[ -f /root/.ssh/authorized_keys ]]; then
   cp /root/.ssh/authorized_keys /tmp/authorized_keys
   chmod 600 /tmp/authorized_keys
 fi
-
-env | grep '^WORDPRESS_' > /root/.ssh/environment 2> /dev/null || true
-chmod 600 /root/.ssh/environment
 
 cat > /etc/ssh/sshd_config.d/override.conf << EOF
 AuthorizedKeysFile /tmp/authorized_keys
@@ -26,25 +20,21 @@ fi
 
 /usr/sbin/sshd
 
-# Create a real wp-config.php (without getenv_docker calls) so that
-# backup/restore scripts can parse credentials via SSH.
-if [[ ! -f /var/www/html/wp-config.php ]] && [[ -f /usr/src/wordpress/wp-config-docker.php ]]; then
-  if [[ ! -f /var/www/html/index.php ]]; then
-    cp -r /usr/src/wordpress/* /var/www/html/
-  fi
-  cp /usr/src/wordpress/wp-config-docker.php /var/www/html/wp-config.php
-  for var in WORDPRESS_DB_HOST WORDPRESS_DB_USER WORDPRESS_DB_PASSWORD WORDPRESS_DB_NAME; do
-    value="${!var:-}"
-    if [[ -n "$value" ]]; then
-      # Escape for PHP single-quoted string: \ → \\, ' → \'
-      value="${value//\\/\\\\}"
-      value="${value//\'/\\\'}"
-      sed -i "s/getenv_docker('$var', '[^']*')/'$value'/" /var/www/html/wp-config.php
-    fi
-  done
+if [[ ! -f /var/www/html/wp-config.php ]]; then
+  cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
+  tr -d $'\r' < /var/www/html/wp-config.php > /tmp/wp-config.tmp && mv /tmp/wp-config.tmp /var/www/html/wp-config.php
+
+  sed -i "s/^define(\\s*'DB_NAME',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_NAME', '${WORDPRESS_DB_NAME:-database_name_here}');/" /var/www/html/wp-config.php
+  sed -i "s/^define(\\s*'DB_USER',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_USER', '${WORDPRESS_DB_USER:-username_here}');/" /var/www/html/wp-config.php
+  sed -i "s/^define(\\s*'DB_PASSWORD',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_PASSWORD', '${WORDPRESS_DB_PASSWORD:-password_here}');/" /var/www/html/wp-config.php
+  sed -i "s/^define(\\s*'DB_HOST',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_HOST', '${WORDPRESS_DB_HOST:-localhost}');/" /var/www/html/wp-config.php
+
   if [[ -n "${WORDPRESS_CONFIG_EXTRA:-}" ]]; then
     printf "\n%s\n" "$WORDPRESS_CONFIG_EXTRA" >> /var/www/html/wp-config.php
   fi
 fi
 
-exec docker-entrypoint.sh "$@"
+set +u
+. /etc/apache2/envvars
+set -u
+exec apache2 -DFOREGROUND

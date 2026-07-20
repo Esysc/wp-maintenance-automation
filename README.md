@@ -347,6 +347,62 @@ This project originally contained a quick FTP-based script to back up a WordPres
 
 The current toolkit replaces that approach with SSH + rsync + restic for encrypted, secure backups and maintenance workflows.
 
+## CI / Automation
+
+The Docker-based tasks (`task build`, `task backup`, `task upgrade`, `task test`, `task test:visual`) are designed for CI pipelines.
+
+### Non-Interactive Upgrade
+
+In CI, skip the operator prompt with `ASK_CONFIRM_BEFORE_UPGRADE=no`:
+
+```bash
+ASK_CONFIRM_BEFORE_UPGRADE=no task upgrade
+```
+
+> **TTY note**: The `task` commands use `docker run -it` for real-time progress output. In CI (no TTY), use `-i` instead and pipe the SSH key through stdin:
+> ```bash
+> ASK_CONFIRM_BEFORE_UPGRADE=no docker run --rm -i \
+>   -v "$PWD/.env:/app/.env:ro" \
+>   -v "$HOME/.config/restic/wp_repo_password:/app/restic_pass:ro" \
+>   -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+>   -v "$PWD/backup_artifacts:/app/backup_artifacts" \
+>   -v "$PWD/var:/app/var" \
+>   -v "$PWD/scripts:/app/scripts:ro" \
+>   wp-backup bash -c 'cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/upgrade_with_rollback.sh' < ~/.ssh/id_ed25519
+> ```
+
+Available CI-friendly env vars (see `scripts/upgrade_with_rollback.sh` for defaults):
+
+| Variable | Default | CI recommendation |
+|---|---|---|
+| `ASK_CONFIRM_BEFORE_UPGRADE` | `yes` | `no` |
+| `VALIDATE_BACKUP_BEFORE_UPGRADE` | `yes` | `yes` (keep safety) |
+| `RUN_STAGING_REHEARSAL_BEFORE_UPGRADE` | `no` | `no` (or `yes` if you have a staging target) |
+| `AUTO_RESTORE_ON_FAILURE` | `yes` | `yes` (auto rollback) |
+| `FORCE_UPGRADE` | `no` | `no` |
+
+Scheduling example (cron / CI scheduler):
+
+```bash
+0 3 * * 0 cd /path/to/repo && RUN_STAGING_REHEARSAL_BEFORE_UPGRADE=yes FORCE_UPGRADE=yes bash scripts/upgrade_with_rollback.sh
+```
+
+### CI Pipeline Test
+
+Run the full end-to-end test suite:
+
+```bash
+task test
+```
+
+Or a visual restore + upgrade check:
+
+```bash
+task test:visual SNAPSHOT=latest
+```
+
+Both tasks exit non-zero on failure, suitable for CI gating.
+
 ## Testing
 
 An end-to-end test suite is available in `tests/` to validate backup, upgrade, and restore in a Docker-based environment.
@@ -383,10 +439,15 @@ make test
 
 This generates SSH keys if missing, builds the container images, and runs the full test suite. A clean exit means all phases passed.
 
-You can control the WordPress versions tested via Make variables:
+When run from backup artifacts directory, the Makefile auto-detects:
+- `WP_INITIAL_VERSION` from the latest backup's `wp-includes/version.php`
+- `WP_UPGRADE_VERSION` from the WordPress API
+- `WP_PHP_VERSION` from `../.env`
+
+You can override any of these explicitly:
 
 ```bash
-make test WP_INITIAL_VERSION=6.6.2 WP_UPGRADE_VERSION=6.7.2
+make test WP_INITIAL_VERSION=6.6.2 WP_UPGRADE_VERSION=6.7.2 WP_PHP_VERSION=8.1
 ```
 
 ### Cleaning Up
@@ -399,15 +460,29 @@ Stops all containers, removes volumes, and deletes the generated SSH keys.
 
 ### Visual Test Environment
 
-Spin up a local WordPress instance from a restic snapshot for manual inspection:
+Spin up a local WordPress instance from a restic snapshot for manual inspection, then upgrades it to the latest version:
 
 ```bash
 task test:visual SNAPSHOT=latest
 ```
 
-The task extracts the snapshot, reads `wp_version` and `db_version` from the backup manifest, and launches matching Docker images (`wordpress:<version>` and `mariadb:<version>` or `mysql:<version>`). The database and files are then imported into the live containers.
+The task:
+1. Extracts the snapshot and reads `wp_version`, `db_version`, `DB_NAME`, `DB_USER` from the backup
+2. Launches matching Docker images (MariaDB + custom Debian WordPress image)
+3. Creates the database user matching the backup's credentials
+4. Imports the database dump with matching table prefix
+5. Copies the WordPress files
+6. Enables HTTPS with a self-signed certificate
+7. **Upgrades** WordPress core, plugins, and themes to the latest versions
+8. Opens a browsable WordPress at `https://localhost:8443` (accept the self-signed cert warning)
 
-Opens a browsable WordPress at `http://localhost:8080` restored from the snapshot. Press Ctrl+C to stop and clean up.
+Press Ctrl+C to stop and clean up.
+
+Override the target upgrade version:
+
+```bash
+task test:visual SNAPSHOT=latest WP_UPGRADE_VERSION=6.7.2
+```
 
 ## Notes
 

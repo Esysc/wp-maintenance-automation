@@ -85,14 +85,14 @@ write_report() {
   } > "$REPORT_FILE"
 }
 
-SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 if [[ -n "${WP_SSH_PORT:-}" ]]; then
   SSH_OPTS+=(-o "Port=${WP_SSH_PORT}")
 fi
 
 remote_wp() {
   local wp_args="$1"
-  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS $wp_args"
+  stdbuf -oL ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS $wp_args"
 }
 
 derive_healthcheck_url() {
@@ -112,7 +112,7 @@ run_backup() {
   snapshot_file="$RUN_DIR/backup_snapshot_id.txt"
 
   log "Starting backup..."
-  if BACKUP_SNAPSHOT_FILE="$snapshot_file" bash "$BACKUP_SCRIPT" >> "$LOG_FILE" 2>&1; then
+  if BACKUP_SNAPSHOT_FILE="$snapshot_file" stdbuf -oL bash "$BACKUP_SCRIPT" 2>&1 | tee -a "$LOG_FILE"; then
     BACKUP_STATUS="ok"
 
     if [[ -s "$snapshot_file" ]]; then
@@ -149,7 +149,7 @@ run_backup_validation() {
     APPLY_FILES=no \
     APPLY_CONFIGS=no \
     CONFIRM_RESTORE=no \
-    bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" >> "$LOG_FILE" 2>&1; then
+    stdbuf -oL bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" 2>&1 | tee -a "$LOG_FILE"; then
     BACKUP_VALIDATION_STATUS="failed"
     FINAL_REASON="backup validation restore extract failed"
     return 1
@@ -229,7 +229,7 @@ run_staging_rehearsal() {
   fi
 
   log "Running staging rehearsal from snapshot ${BACKUP_SNAPSHOT_ID:-latest}..."
-  if bash "$STAGING_REHEARSAL_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" >> "$LOG_FILE" 2>&1; then
+  if stdbuf -oL bash "$STAGING_REHEARSAL_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" 2>&1 | tee -a "$LOG_FILE"; then
     STAGING_REHEARSAL_STATUS="ok"
     return 0
   fi
@@ -283,44 +283,44 @@ run_upgrade_approval() {
 run_upgrade() {
   log "Starting WordPress full upgrade with WP-CLI..."
 
-  if ! remote_wp "core update" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "core update" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="core update failed"
     return 1
   fi
 
-  if ! remote_wp "plugin update --all" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "plugin update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="plugin update failed"
     return 1
   fi
 
-  if ! remote_wp "theme update --all" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "theme update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="theme update failed"
     return 1
   fi
 
   # Keep language packs aligned with updated core/plugins/themes.
-  if ! remote_wp "language core update" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "language core update" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="language core update failed"
     return 1
   fi
 
-  if ! remote_wp "language plugin update --all" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "language plugin update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="language plugin update failed"
     return 1
   fi
 
-  if ! remote_wp "language theme update --all" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "language theme update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="language theme update failed"
     return 1
   fi
 
-  if ! remote_wp "core update-db" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "core update-db" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="core update-db failed"
     return 1
@@ -351,7 +351,7 @@ run_healthcheck() {
       if [[ -n "$EXTRA_POST_UPGRADE_CHECK_CMD" ]]; then
         log "Running extra post-upgrade check command"
         # shellcheck disable=SC2046
-        if ! ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
+        if ! ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $EXTRA_POST_UPGRADE_CHECK_CMD" 2>&1 | tee -a "$LOG_FILE"; then
           HEALTH_STATUS="failed"
           FINAL_REASON="extra post-upgrade check failed"
           return 1
@@ -387,7 +387,7 @@ run_rollback() {
     APPLY_CONFIGS="$APPLY_CONFIGS_ON_ROLLBACK" \
     DELETE_REMOTE_FILES="$DELETE_REMOTE_FILES_ON_ROLLBACK" \
     REMOTE_SUDO="$REMOTE_SUDO_ON_ROLLBACK" \
-    bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" >> "$LOG_FILE" 2>&1; then
+    stdbuf -oL bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" 2>&1 | tee -a "$LOG_FILE"; then
     ROLLBACK_STATUS="ok"
     return 0
   fi

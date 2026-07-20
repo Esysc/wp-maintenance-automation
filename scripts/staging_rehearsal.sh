@@ -77,7 +77,7 @@ write_report() {
   } > "$REPORT_FILE"
 }
 
-STAGING_SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+STAGING_SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 if [[ -n "${STAGING_WP_SSH_PORT:-}" ]]; then
   STAGING_SSH_OPTS+=(-o "Port=${STAGING_WP_SSH_PORT}")
 fi
