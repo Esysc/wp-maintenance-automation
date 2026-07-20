@@ -13,11 +13,11 @@ if [[ -f ".env" ]]; then
   source ".env"
   set +a
 fi
-if [[ -n "$RESTIC_PASSWORD_FILE" && ! -f "$RESTIC_PASSWORD_FILE" ]] && [[ -n "$RESTIC_PASSWORD_FILE_FALLBACK" && -f "$RESTIC_PASSWORD_FILE_FALLBACK" ]]; then
+if [[ -n "${RESTIC_PASSWORD_FILE:-}" && ! -f "${RESTIC_PASSWORD_FILE:-}" ]] && [[ -n "${RESTIC_PASSWORD_FILE_FALLBACK:-}" && -f "${RESTIC_PASSWORD_FILE_FALLBACK:-}" ]]; then
   RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE_FALLBACK"
 fi
 RESTIC_REPOSITORY_FALLBACK="${RESTIC_REPOSITORY_FALLBACK:-}"
-if [[ "$RESTIC_REPOSITORY" == /* && ! -d "$RESTIC_REPOSITORY" ]] && [[ -n "$RESTIC_REPOSITORY_FALLBACK" && -d "$RESTIC_REPOSITORY_FALLBACK" ]]; then
+if [[ "${RESTIC_REPOSITORY:-}" == /* && ! -d "${RESTIC_REPOSITORY:-}" ]] && [[ -n "${RESTIC_REPOSITORY_FALLBACK:-}" && -d "${RESTIC_REPOSITORY_FALLBACK:-}" ]]; then
   RESTIC_REPOSITORY="$RESTIC_REPOSITORY_FALLBACK"
 fi
 
@@ -101,7 +101,7 @@ restore_db() {
   local mysql_cnf_content mysql_cnf_b64
   mysql_cnf_content=$(printf '[client]\nuser=%s\npassword=%s\nhost=%s\n' "$DB_USER" "$DB_PASSWORD" "$DB_HOST")
   mysql_cnf_b64=$(printf '%s' "$mysql_cnf_content" | base64 | tr -d '\n')
-  gunzip -c "$dump" | ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "echo '$mysql_cnf_b64' | base64 --decode > '$mysql_cnf_remote' && chmod 600 '$mysql_cnf_remote' && mysql --defaults-extra-file='$mysql_cnf_remote' '$DB_NAME'; rm -f '$mysql_cnf_remote'"
+  gunzip -c "$dump" | ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "echo '$mysql_cnf_b64' | base64 --decode > '$mysql_cnf_remote' && chmod 600 '$mysql_cnf_remote' && mysql --defaults-extra-file='$mysql_cnf_remote' '$DB_NAME'; rc=\$?; rm -f '$mysql_cnf_remote'; exit \$rc"
 }
 
 restore_files() {
