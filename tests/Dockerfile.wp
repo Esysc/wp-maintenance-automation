@@ -9,7 +9,7 @@ RUN apt-get update \
     rsync \
  && rm -rf /var/lib/apt/lists/*
 
-RUN curl -o /usr/local/bin/wp-cli https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+RUN curl -fS -o /usr/local/bin/wp-cli https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
  && chmod +x /usr/local/bin/wp-cli \
  && printf '#!/bin/bash\n/usr/local/bin/wp-cli --allow-root --path=/var/www/html "$@"\n' > /usr/local/bin/wp \
  && chmod +x /usr/local/bin/wp

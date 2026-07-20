@@ -101,8 +101,7 @@ restore_db() {
   local mysql_cnf_content mysql_cnf_b64
   mysql_cnf_content=$(printf '[client]\nuser=%s\npassword=%s\nhost=%s\n' "$DB_USER" "$DB_PASSWORD" "$DB_HOST")
   mysql_cnf_b64=$(printf '%s' "$mysql_cnf_content" | base64 | tr -d '\n')
-  gunzip -c "$dump" | ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "echo '$mysql_cnf_b64' | base64 --decode > '$mysql_cnf_remote' && mysql --defaults-extra-file='$mysql_cnf_remote' '$DB_NAME'"
-  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "rm -f '$mysql_cnf_remote'" 2> /dev/null || true
+  gunzip -c "$dump" | ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "echo '$mysql_cnf_b64' | base64 --decode > '$mysql_cnf_remote' && chmod 600 '$mysql_cnf_remote' && mysql --defaults-extra-file='$mysql_cnf_remote' '$DB_NAME'; rm -f '$mysql_cnf_remote'"
 }
 
 restore_files() {
