@@ -5,10 +5,14 @@ set -euo pipefail
 # Orchestrates: backup -> full WordPress upgrade -> health checks -> optional rollback.
 # Always generates a report and a detailed log file.
 
+RESTIC_PASSWORD_FILE_FALLBACK="${RESTIC_PASSWORD_FILE:-}"
 if [[ -f ".env" ]]; then
   set -a
   source ".env"
   set +a
+fi
+if [[ -n "$RESTIC_PASSWORD_FILE" && ! -f "$RESTIC_PASSWORD_FILE" ]] && [[ -n "$RESTIC_PASSWORD_FILE_FALLBACK" && -f "$RESTIC_PASSWORD_FILE_FALLBACK" ]]; then
+  RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE_FALLBACK"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
