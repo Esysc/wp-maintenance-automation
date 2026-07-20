@@ -10,10 +10,16 @@ set -euo pipefail
 # - Optional: rclone/SMB for repository storage
 
 # Load environment from .env if present
+RESTIC_PASSWORD_FILE_FALLBACK="${RESTIC_PASSWORD_FILE:-}"
 if [[ -f ".env" ]]; then
   set -a
   source ".env"
   set +a
+fi
+# If .env set RESTIC_PASSWORD_FILE to a path that doesn't exist, fall back
+# to the value passed via Docker's -e (which points to the mounted password file).
+if [[ -n "$RESTIC_PASSWORD_FILE" && ! -f "$RESTIC_PASSWORD_FILE" ]] && [[ -n "$RESTIC_PASSWORD_FILE_FALLBACK" && -f "$RESTIC_PASSWORD_FILE_FALLBACK" ]]; then
+  RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE_FALLBACK"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
