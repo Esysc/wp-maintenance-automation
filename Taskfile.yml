@@ -36,6 +36,7 @@ tasks:
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -e RESTIC_PASSWORD_FILE_FALLBACK=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/scripts:/app/scripts:ro" \
           -e RESTIC_REPOSITORY_FALLBACK=/restic_repo \
@@ -52,6 +53,7 @@ tasks:
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -e RESTIC_PASSWORD_FILE_FALLBACK=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/restore:/app/restore" \
           -v "$(pwd)/scripts:/app/scripts:ro" \
@@ -67,6 +69,7 @@ tasks:
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -e RESTIC_PASSWORD_FILE_FALLBACK=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/var:/app/var" \
           -v "$(pwd)/scripts:/app/scripts:ro" \
@@ -84,6 +87,7 @@ tasks:
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -e RESTIC_PASSWORD_FILE_FALLBACK=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/var:/app/var" \
           -v "$(pwd)/scripts:/app/scripts:ro" \
