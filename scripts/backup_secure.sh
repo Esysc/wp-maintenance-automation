@@ -21,6 +21,12 @@ fi
 if [[ -n "$RESTIC_PASSWORD_FILE" && ! -f "$RESTIC_PASSWORD_FILE" ]] && [[ -n "$RESTIC_PASSWORD_FILE_FALLBACK" && -f "$RESTIC_PASSWORD_FILE_FALLBACK" ]]; then
   RESTIC_PASSWORD_FILE="$RESTIC_PASSWORD_FILE_FALLBACK"
 fi
+# Same fallback for RESTIC_REPOSITORY — if .env points to a local path that
+# doesn't exist inside the container, use the Docker-mounted fallback.
+RESTIC_REPOSITORY_FALLBACK="${RESTIC_REPOSITORY_FALLBACK:-}"
+if [[ "$RESTIC_REPOSITORY" == /* && ! -d "$RESTIC_REPOSITORY" ]] && [[ -n "$RESTIC_REPOSITORY_FALLBACK" && -d "$RESTIC_REPOSITORY_FALLBACK" ]]; then
+  RESTIC_REPOSITORY="$RESTIC_REPOSITORY_FALLBACK"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"

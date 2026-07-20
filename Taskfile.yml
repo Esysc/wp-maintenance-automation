@@ -13,6 +13,8 @@ vars:
   ENV_FILE: .env
   # Host path to the restic password file (mounted into the container)
   RESTIC_PASSWORD_FILE_HOST: .config/restic/wp_repo_password
+  RESTIC_REPO:
+    sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true
   BACKUP_ARTIFACTS_DIR: backup_artifacts
 
 tasks:
@@ -36,6 +38,8 @@ tasks:
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/scripts:/app/scripts:ro" \
+          -e RESTIC_REPOSITORY_FALLBACK=/restic_repo \
+          -v "{{.RESTIC_REPO}}:/restic_repo" \
           {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/backup_secure.sh' < "{{.SSH_KEY}}"
 
   restore:
@@ -51,6 +55,8 @@ tasks:
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/restore:/app/restore" \
           -v "$(pwd)/scripts:/app/scripts:ro" \
+          -e RESTIC_REPOSITORY_FALLBACK=/restic_repo \
+          -v "{{.RESTIC_REPO}}:/restic_repo" \
           {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/restore_secure.sh "{{.SNAPSHOT}}"' < "{{.SSH_KEY}}"
 
   upgrade:
@@ -64,6 +70,8 @@ tasks:
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/var:/app/var" \
           -v "$(pwd)/scripts:/app/scripts:ro" \
+          -e RESTIC_REPOSITORY_FALLBACK=/restic_repo \
+          -v "{{.RESTIC_REPO}}:/restic_repo" \
           {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/upgrade_with_rollback.sh' < "{{.SSH_KEY}}"
 
   rehearse:
@@ -79,6 +87,8 @@ tasks:
           -v "$(pwd)/{{.BACKUP_ARTIFACTS_DIR}}:/app/backup_artifacts" \
           -v "$(pwd)/var:/app/var" \
           -v "$(pwd)/scripts:/app/scripts:ro" \
+          -e RESTIC_REPOSITORY_FALLBACK=/restic_repo \
+          -v "{{.RESTIC_REPO}}:/restic_repo" \
           {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/staging_rehearsal.sh "{{.SNAPSHOT}}"' < "{{.SSH_KEY}}"
 
   restic:init:
