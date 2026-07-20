@@ -92,7 +92,7 @@ tasks:
           {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/staging_rehearsal.sh "{{.SNAPSHOT}}"' < "{{.SSH_KEY}}"
 
   restic:init:
-    desc: "Initialize the restic repository via Docker (reads RESTIC_REPOSITORY from .env)"
+    desc: "Initialize a local restic repository via Docker (mounts RESTIC_REPOSITORY from .env)"
     vars:
       REPO:
         sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true
@@ -106,7 +106,7 @@ tasks:
           {{.DOCKER_IMAGE}} restic --repo /restic_repo init
 
   restic:snapshots:
-    desc: "List restic snapshots via Docker (reads RESTIC_REPOSITORY from .env)"
+    desc: "List restic snapshots in local repo via Docker (mounts RESTIC_REPOSITORY from .env)"
     vars:
       REPO:
         sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true
@@ -120,7 +120,7 @@ tasks:
           {{.DOCKER_IMAGE}} restic --repo /restic_repo snapshots
 
   restic:check:
-    desc: "Check restic repository integrity via Docker (reads RESTIC_REPOSITORY from .env)"
+    desc: "Check integrity of local restic repo via Docker (mounts RESTIC_REPOSITORY from .env)"
     vars:
       REPO:
         sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true

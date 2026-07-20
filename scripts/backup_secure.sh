@@ -80,7 +80,7 @@ acquire_lock() {
   if ! mkdir "$LOCK_DIR" 2> /dev/null; then
     local pid
     pid=$(cat "$LOCK_DIR/.pid" 2> /dev/null || true)
-    if [[ -z "$pid" ]]; then
+    if [[ -z "$pid" ]] || [[ ! "$pid" =~ ^[0-9]+$ ]]; then
       rm -rf "$LOCK_DIR"
     elif [[ "$pid" -eq "$$" ]]; then
       # Previous run wrote PID 1 (Docker) and this container also has PID 1;
@@ -169,7 +169,7 @@ DB_DUMP_FILE="$DB_DIR/${TS}_${DB_NAME}.sql.gz"
 # password in process tables (visible via ps aux on the remote server).
 MYSQL_CNF_CONTENT=$(printf '[client]\nuser=%s\npassword=%s\nhost=%s\n' "$DB_USER" "$DB_PASSWORD" "$DB_HOST")
 MYSQL_CNF_B64=$(printf '%s' "$MYSQL_CNF_CONTENT" | base64 | tr -d '\n')
-ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "echo '$MYSQL_CNF_B64' | base64 --decode > '$MYSQL_CNF_REMOTE' && mysqldump --defaults-extra-file='$MYSQL_CNF_REMOTE' --single-transaction --quick --lock-tables=false '$DB_NAME'" | gzip > "$DB_DUMP_FILE"
+ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "echo '$MYSQL_CNF_B64' | base64 --decode > '$MYSQL_CNF_REMOTE' && chmod 600 '$MYSQL_CNF_REMOTE' && mysqldump --defaults-extra-file='$MYSQL_CNF_REMOTE' --single-transaction --quick --lock-tables=false '$DB_NAME'" | gzip > "$DB_DUMP_FILE"
 
 # Capture DB server version while the temp config is still on the remote
 DB_VERSION=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "mysql --defaults-extra-file='$MYSQL_CNF_REMOTE' -N -e 'SELECT VERSION()'" 2> /dev/null || echo "unknown")

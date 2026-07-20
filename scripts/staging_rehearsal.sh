@@ -77,19 +77,14 @@ write_report() {
   } > "$REPORT_FILE"
 }
 
-ssh_opts_for_host() {
-  local port_var="${1:-STAGING_WP_SSH_PORT}"
-  local opts=()
-  if [[ -n "${!port_var:-}" ]]; then
-    opts+=(-p "${!port_var}")
-  fi
-  echo "${opts[@]}"
-}
+STAGING_SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+if [[ -n "${STAGING_WP_SSH_PORT:-}" ]]; then
+  STAGING_SSH_OPTS+=(-o "Port=${STAGING_WP_SSH_PORT}")
+fi
 
 staging_wp() {
   local wp_args="$1"
-  # shellcheck disable=SC2046
-  ssh $(ssh_opts_for_host STAGING_WP_SSH_PORT) "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_WP_CLI_BIN $STAGING_WP_CLI_EXTRA_ARGS $wp_args"
+  ssh "${STAGING_SSH_OPTS[@]}" "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_WP_CLI_BIN $STAGING_WP_CLI_EXTRA_ARGS $wp_args"
 }
 
 derive_staging_healthcheck_url() {
@@ -98,8 +93,7 @@ derive_staging_healthcheck_url() {
   fi
 
   local detected
-  # shellcheck disable=SC2046
-  detected=$(ssh $(ssh_opts_for_host STAGING_WP_SSH_PORT) "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_WP_CLI_BIN $STAGING_WP_CLI_EXTRA_ARGS option get home 2>/dev/null" || true)
+  detected=$(ssh "${STAGING_SSH_OPTS[@]}" "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_WP_CLI_BIN $STAGING_WP_CLI_EXTRA_ARGS option get home 2>/dev/null" || true)
   if [[ -n "$detected" ]]; then
     STAGING_HEALTHCHECK_URL="$detected"
   fi
@@ -196,7 +190,7 @@ run_staging_healthcheck() {
       if [[ -n "$STAGING_EXTRA_POST_UPGRADE_CHECK_CMD" ]]; then
         log "Running extra staging post-upgrade check command"
         # shellcheck disable=SC2046
-        if ! ssh $(ssh_opts_for_host STAGING_WP_SSH_PORT) "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
+        if ! ssh "${STAGING_SSH_OPTS[@]}" "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
           HEALTH_STATUS="failed"
           FINAL_REASON="extra staging post-upgrade check failed"
           return 1

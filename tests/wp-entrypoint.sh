@@ -36,8 +36,10 @@ if [[ ! -f /var/www/html/wp-config.php ]] && [[ -f /usr/src/wordpress/wp-config-
   for var in WORDPRESS_DB_HOST WORDPRESS_DB_USER WORDPRESS_DB_PASSWORD WORDPRESS_DB_NAME; do
     value="${!var:-}"
     if [[ -n "$value" ]]; then
-      escaped_value=$(printf '%s\n' "$value" | sed 's/[\/&]/\\&/g')
-      sed -i "s/getenv_docker('$var', '[^']*')/'$escaped_value'/" /var/www/html/wp-config.php
+      # Escape for PHP single-quoted string: \ → \\, ' → \'
+      value="${value//\\/\\\\}"
+      value="${value//\'/\\\'}"
+      sed -i "s/getenv_docker('$var', '[^']*')/'$value'/" /var/www/html/wp-config.php
     fi
   done
   if [[ -n "${WORDPRESS_CONFIG_EXTRA:-}" ]]; then

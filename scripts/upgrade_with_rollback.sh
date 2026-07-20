@@ -85,19 +85,14 @@ write_report() {
   } > "$REPORT_FILE"
 }
 
-ssh_opts_for_host() {
-  local port_var="${1:-WP_SSH_PORT}"
-  local opts=()
-  if [[ -n "${!port_var:-}" ]]; then
-    opts+=(-p "${!port_var}")
-  fi
-  echo "${opts[@]}"
-}
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+if [[ -n "${WP_SSH_PORT:-}" ]]; then
+  SSH_OPTS+=(-o "Port=${WP_SSH_PORT}")
+fi
 
 remote_wp() {
   local wp_args="$1"
-  # shellcheck disable=SC2046
-  ssh $(ssh_opts_for_host WP_SSH_PORT) "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS $wp_args"
+  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS $wp_args"
 }
 
 derive_healthcheck_url() {
@@ -106,8 +101,7 @@ derive_healthcheck_url() {
   fi
 
   local detected
-  # shellcheck disable=SC2046
-  detected=$(ssh $(ssh_opts_for_host WP_SSH_PORT) "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS option get home 2>/dev/null" || true)
+  detected=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS option get home 2>/dev/null" || true)
   if [[ -n "$detected" ]]; then
     HEALTHCHECK_URL="$detected"
   fi
@@ -146,7 +140,7 @@ run_backup_validation() {
     return 0
   fi
 
-  local validation_dir restore_root latest_sub artifact_root db_dir wp_dir dump
+  local validation_dir restore_root latest_sub artifact_root db_dir wp_dir dump found
   validation_dir="$RUN_DIR/backup_validation"
 
   log "Validating backup snapshot ${BACKUP_SNAPSHOT_ID:-latest} via local restore extract..."
@@ -357,7 +351,7 @@ run_healthcheck() {
       if [[ -n "$EXTRA_POST_UPGRADE_CHECK_CMD" ]]; then
         log "Running extra post-upgrade check command"
         # shellcheck disable=SC2046
-        if ! ssh $(ssh_opts_for_host WP_SSH_PORT) "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
+        if ! ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
           HEALTH_STATUS="failed"
           FINAL_REASON="extra post-upgrade check failed"
           return 1
