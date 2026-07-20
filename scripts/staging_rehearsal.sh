@@ -69,9 +69,19 @@ write_report() {
   } > "$REPORT_FILE"
 }
 
+ssh_opts_for_host() {
+  local port_var="${1:-STAGING_WP_SSH_PORT}"
+  local opts=()
+  if [[ -n "${!port_var:-}" ]]; then
+    opts+=(-p "${!port_var}")
+  fi
+  echo "${opts[@]}"
+}
+
 staging_wp() {
   local wp_args="$1"
-  ssh "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_WP_CLI_BIN $STAGING_WP_CLI_EXTRA_ARGS $wp_args"
+  # shellcheck disable=SC2046
+  ssh $(ssh_opts_for_host STAGING_WP_SSH_PORT) "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_WP_CLI_BIN $STAGING_WP_CLI_EXTRA_ARGS $wp_args"
 }
 
 derive_staging_healthcheck_url() {
@@ -80,7 +90,8 @@ derive_staging_healthcheck_url() {
   fi
 
   local detected
-  detected=$(ssh "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_WP_CLI_BIN $STAGING_WP_CLI_EXTRA_ARGS option get home 2>/dev/null" || true)
+  # shellcheck disable=SC2046
+  detected=$(ssh $(ssh_opts_for_host STAGING_WP_SSH_PORT) "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_WP_CLI_BIN $STAGING_WP_CLI_EXTRA_ARGS option get home 2>/dev/null" || true)
   if [[ -n "$detected" ]]; then
     STAGING_HEALTHCHECK_URL="$detected"
   fi
@@ -90,6 +101,7 @@ run_restore_to_staging() {
   log "Restoring snapshot '$SNAPSHOT' to staging..."
   if WP_SSH_HOST="$STAGING_WP_SSH_HOST" \
     WP_SSH_USER="$STAGING_WP_SSH_USER" \
+    WP_SSH_PORT="${STAGING_WP_SSH_PORT:-}" \
     WP_ROOT="$STAGING_WP_ROOT" \
     CONFIRM_RESTORE=yes \
     APPLY_DB=yes \
@@ -175,7 +187,8 @@ run_staging_healthcheck() {
       log "Staging healthcheck passed with status $code on attempt $attempt"
       if [[ -n "$STAGING_EXTRA_POST_UPGRADE_CHECK_CMD" ]]; then
         log "Running extra staging post-upgrade check command"
-        if ! ssh "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
+        # shellcheck disable=SC2046
+        if ! ssh $(ssh_opts_for_host STAGING_WP_SSH_PORT) "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
           HEALTH_STATUS="failed"
           FINAL_REASON="extra staging post-upgrade check failed"
           return 1
