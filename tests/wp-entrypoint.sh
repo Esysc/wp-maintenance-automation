@@ -20,14 +20,27 @@ fi
 
 /usr/sbin/sshd
 
+escape_sed_repl() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//&/\\&}"
+  s="${s//\//\\/}"
+  printf '%s\n' "$s"
+}
+
 if [[ ! -f /var/www/html/wp-config.php ]]; then
   cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
   tr -d $'\r' < /var/www/html/wp-config.php > /tmp/wp-config.tmp && mv /tmp/wp-config.tmp /var/www/html/wp-config.php
 
-  sed -i "s/^define(\\s*'DB_NAME',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_NAME', '${WORDPRESS_DB_NAME:-database_name_here}');/" /var/www/html/wp-config.php
-  sed -i "s/^define(\\s*'DB_USER',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_USER', '${WORDPRESS_DB_USER:-username_here}');/" /var/www/html/wp-config.php
-  sed -i "s/^define(\\s*'DB_PASSWORD',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_PASSWORD', '${WORDPRESS_DB_PASSWORD:-password_here}');/" /var/www/html/wp-config.php
-  sed -i "s/^define(\\s*'DB_HOST',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_HOST', '${WORDPRESS_DB_HOST:-localhost}');/" /var/www/html/wp-config.php
+  db_name=$(escape_sed_repl "${WORDPRESS_DB_NAME:-database_name_here}")
+  db_user=$(escape_sed_repl "${WORDPRESS_DB_USER:-username_here}")
+  db_pass=$(escape_sed_repl "${WORDPRESS_DB_PASSWORD:-password_here}")
+  db_host=$(escape_sed_repl "${WORDPRESS_DB_HOST:-localhost}")
+
+  sed -i "s/^define(\\s*'DB_NAME',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_NAME', '${db_name}');/" /var/www/html/wp-config.php
+  sed -i "s/^define(\\s*'DB_USER',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_USER', '${db_user}');/" /var/www/html/wp-config.php
+  sed -i "s/^define(\\s*'DB_PASSWORD',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_PASSWORD', '${db_pass}');/" /var/www/html/wp-config.php
+  sed -i "s/^define(\\s*'DB_HOST',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_HOST', '${db_host}');/" /var/www/html/wp-config.php
 
   if [[ -n "${WORDPRESS_CONFIG_EXTRA:-}" ]]; then
     printf "\n%s\n" "$WORDPRESS_CONFIG_EXTRA" >> /var/www/html/wp-config.php

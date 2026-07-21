@@ -60,7 +60,15 @@ mkdir -p "$TARGET"
 
 echo "[1/5] Restoring snapshot '$SNAPSHOT' to $TARGET..."
 export RESTIC_PASSWORD_FILE
-restic --repo "$RESTIC_REPOSITORY" restore "$SNAPSHOT" --target "$TARGET"
+restic --repo "$RESTIC_REPOSITORY" restore "$SNAPSHOT" --target "$TARGET" &
+RESTORE_PID=$!
+trap 'kill "$RESTORE_PID" 2>/dev/null; exit' INT TERM
+while kill -0 "$RESTORE_PID" 2> /dev/null; do
+  sleep 30
+  echo "  (restoring snapshot $SNAPSHOT... $(date +%H:%M:%S))"
+done
+trap - INT TERM
+wait "$RESTORE_PID"
 
 ARTIFACT_ROOT="$TARGET"
 found=$(find "$TARGET" -type d -name "backup_artifacts" 2> /dev/null | head -n1 || true)

@@ -34,7 +34,7 @@ RUN mkdir -p /etc/apache2/ssl \
     -keyout /etc/apache2/ssl/localhost.key \
     -out /etc/apache2/ssl/localhost.crt \
     -subj "/CN=localhost/O=Visual Test/C=CH" \
-    -addext "subjectAltName=DNS:localhost,DNS:art-therapie-vevey.ch,DNS:www.art-therapie-vevey.ch,IP:127.0.0.1"
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 
 COPY tests/apache-default-ssl.conf /etc/apache2/sites-available/default-ssl.conf
 RUN a2ensite default-ssl

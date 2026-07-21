@@ -24,6 +24,7 @@ The format is based on Keep a Changelog.
 - Test environment `test.env` with `WP_PHP_VERSION=8.2` default.
 - Explicit MariaDB `10.11` image tag in Docker Compose to match remote production.
 - CI/automation documentation in README with non-interactive usage examples (`ASK_CONFIRM_BEFORE_UPGRADE=no`) and TTY requirements.
+- Clarify upgrade workflow: explains why a fresh backup is made (safety net) and how test tasks relate (optional pre-flight checks, not part of upgrade pipeline).
 - `ConnectTimeout=15` added to all SSH options to prevent hangs on unreachable hosts.
 - `stdbuf -oL` on piped command output to force line-buffered output through pipes for real-time progress display.
 
@@ -46,6 +47,9 @@ The format is based on Keep a Changelog.
 - Pipe buffering no longer hides script output: all step outputs stream to terminal in real-time instead of being silently redirected to log file.
 - SSH key permission errors on macOS Docker Desktop resolved by mounting as `:ro` volume and copying with `chmod 600` inside the container.
 - Default Apache `index.html` removed in visual test container to prevent overriding WordPress.
+- Self-signed SSL certificate SAN limited to `localhost` and `127.0.0.1` (removed production domain names).
+- SQL values in visual test DB creation are now escaped against injection.
+- `sed` replacement values in `wp-entrypoint.sh` and `wp-config-gen.sh` are escaped to prevent breakage on special characters (`&`, `\`, `/`).
 
 ### Security
 - PHP hang issue in `read_db_config()` resolved by removing interactive `php -v` check.

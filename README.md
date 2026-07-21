@@ -205,16 +205,32 @@ Note: `RESTIC_PASSWORD_FILE` is still required; restic’s encryption is indepen
 
 ### Automated Upgrade + Rollback (`scripts/upgrade_with_rollback.sh`)
 
-This script is designed for scheduled maintenance windows and executes:
+`task upgrade` is an **all-in-one pipeline**: it backups the live site, validates the backup, performs the full WordPress upgrade, runs health checks, and automatically rolls back if something fails — all in a single command.
 
-1. Secure backup (`scripts/backup_secure.sh`)
-2. Local backup validation (restore extract + artifact integrity checks)
-3. Optional staging rehearsal gate (`scripts/staging_rehearsal.sh`) using the same snapshot
-4. Operator approval prompt before upgrade (or forced with `FORCE_UPGRADE=yes`)
-5. Full WordPress update via WP-CLI (`core`, `plugins`, `themes`, languages, DB upgrade)
-6. Healthcheck (`curl` HTTP status check, optional extra remote smoke command)
-7. Automatic rollback (`scripts/restore_secure.sh`) if update or healthcheck fails
-8. Full run report with statuses for all steps
+```
+┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐
+│  Backup  │ → │ Validate │ → │ Upgrade  │ → │ Health‑  │ → │ Report   │
+│  (fresh) │   │ (restic) │   │ (wp-cli) │   │ check    │   │          │
+└──────────┘   └──────────┘   └──────────┘   └─────┬────┘   └──────────┘
+                                                    │ fail
+                                                    ↓
+                                               ┌──────────┐
+                                               │ Rollback │
+                                               │ (restore)│
+                                               └──────────┘
+```
+
+The pipeline executes:
+
+1. **Fresh backup** — `scripts/backup_secure.sh` creates a snapshot seconds before the upgrade. This is a safety net, not a replacement for regular backups.
+2. **Backup validation** — locally extracts the restic snapshot to verify it's intact.
+3. **Optional staging rehearsal** — optionally restores to staging and tests the upgrade there first.
+4. **Full upgrade** — WordPress core, plugins, themes, languages, and database via WP-CLI.
+5. **Healthcheck** — verifies the site responds correctly after upgrade.
+6. **Auto-rollback** — if healthcheck fails, restores the pre-upgrade snapshot automatically.
+7. **Report** — writes a full summary with statuses for each step.
+
+> **How do `task test` / `task test:visual` fit in?** These are optional **pre-flight sandbox checks** you run *before* `task upgrade` to predict whether the upgrade will succeed. They simulate the upgrade in isolated Docker containers using a backup snapshot. They are **not** part of the upgrade pipeline — you run them separately, on your own schedule.
 
 ```mermaid
 flowchart TD
@@ -241,17 +257,19 @@ When `RUN_STAGING_REHEARSAL_BEFORE_UPGRADE=yes`, the production workflow hard-st
 
 ### Staging Rehearsal (`scripts/staging_rehearsal.sh`)
 
-This script restores a snapshot to staging, upgrades staging, and runs health checks there.
+A **dress rehearsal** for the upgrade. It takes a backup snapshot, restores it to a separate staging server, runs the full WordPress upgrade there, and verifies everything with health checks — all **without touching the live site**.
+
+This catches issues early: plugin incompatibilities, theme breakage, database migration failures, or healthcheck misconfiguration.
 
 ```bash
 bash scripts/staging_rehearsal.sh latest
 ```
 
-Typical use with production workflow:
+Can also be used as an **automatic gate** before production upgrades:
 - Set `RUN_STAGING_REHEARSAL_BEFORE_UPGRADE=yes` in `.env`
 - Configure staging target variables (`STAGING_WP_SSH_HOST`, `STAGING_WP_SSH_USER`, `STAGING_WP_ROOT`)
 - Set `STAGING_HEALTHCHECK_URL`
-- Run `scripts/upgrade_with_rollback.sh`
+- Run `scripts/upgrade_with_rollback.sh` — it will abort the production upgrade if the rehearsal fails.
 
 ### Running `upgrade_with_rollback.sh`
 
@@ -359,7 +377,8 @@ In CI, skip the operator prompt with `ASK_CONFIRM_BEFORE_UPGRADE=no`:
 ASK_CONFIRM_BEFORE_UPGRADE=no task upgrade
 ```
 
-> **TTY note**: The `task` commands use `docker run -it` for real-time progress output. In CI (no TTY), use `-i` instead and pipe the SSH key through stdin:
+> **TTY note**: The `task` commands auto-detect TTY and use `-it` locally or `-i` in CI/non-interactive runners.
+> If you run Docker directly, use `-i` and pipe the SSH key through stdin:
 > ```bash
 > ASK_CONFIRM_BEFORE_UPGRADE=no docker run --rm -i \
 >   -v "$PWD/.env:/app/.env:ro" \

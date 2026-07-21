@@ -16,6 +16,9 @@ vars:
   RESTIC_REPO:
     sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true
   BACKUP_ARTIFACTS_DIR: backup_artifacts
+  DOCKER_TTY_FLAGS:
+    sh: |
+      if [ -t 0 ] && [ -t 1 ]; then echo "-it"; else echo "-i"; fi
 
 tasks:
   default:
@@ -32,7 +35,7 @@ tasks:
     desc: "Run a secure backup via Docker (requires .env, SSH keys, restic password)"
     cmds:
       - |
-        docker run --rm -it \
+        docker run --rm {{.DOCKER_TTY_FLAGS}} \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
@@ -50,7 +53,7 @@ tasks:
       SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
     cmds:
       - |
-        docker run --rm -it \
+        docker run --rm {{.DOCKER_TTY_FLAGS}} \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
@@ -67,7 +70,7 @@ tasks:
     desc: "Full upgrade with backup, healthcheck, and auto-rollback via Docker"
     cmds:
       - |
-        docker run --rm -it \
+        docker run --rm {{.DOCKER_TTY_FLAGS}} \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
@@ -86,7 +89,7 @@ tasks:
       SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
     cmds:
       - |
-        docker run --rm -it \
+        docker run --rm {{.DOCKER_TTY_FLAGS}} \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
@@ -239,7 +242,7 @@ tasks:
 
         echo "  Creating database user matching backup credentials..."
         docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u root -prootpass \
-          -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`; CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$DB_PASS'; GRANT ALL ON \`$DB_NAME\`.* TO '$DB_USER'@'%'; FLUSH PRIVILEGES;"
+          -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME//\`/}\`; CREATE USER IF NOT EXISTS '${DB_USER//\'/''}'@'%' IDENTIFIED BY '${DB_PASS//\'/''}'; GRANT ALL ON \`${DB_NAME//\`/}\`.* TO '${DB_USER//\'/''}'@'%'; FLUSH PRIVILEGES;"
 
         echo "Step 5: Importing database..."
         DB_DUMP=$(ls -1t {{.RESTORE_DIR}}/backup_artifacts/*/db/*.gz 2>/dev/null | head -n1 || true)
@@ -247,16 +250,21 @@ tasks:
           echo "  Importing from: $DB_DUMP"
           docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u root -prootpass \
             -e "SET GLOBAL max_allowed_packet=1073741824; SET GLOBAL net_read_timeout=600; SET GLOBAL net_write_timeout=600;"
-          gunzip -c "$DB_DUMP" | \
+          if ! gunzip -c "$DB_DUMP" | \
             docker compose -f tests/docker-compose.visual.yml exec -T db \
-              mysql --max-allowed-packet=1G -u root -prootpass "$DB_NAME" || true
-          RC=$?
-          if docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u root -prootpass \
-            -e "SELECT SCHEMA_NAME FROM information_schema.schemata WHERE SCHEMA_NAME='$DB_NAME'" 2>/dev/null | grep -q "$DB_NAME"; then
-            echo "  Import completed (database \`$DB_NAME\` exists)"
-          else
-            echo "  WARNING: Import may have failed (database \`$DB_NAME\` not found)"
+              mysql --max-allowed-packet=1G -u root -prootpass "$DB_NAME"; then
+            echo "  ERROR: Database import failed"
             docker compose -f tests/docker-compose.visual.yml logs --tail=20 db 2>/dev/null || true
+            exit 1
+          fi
+          TABLE_COUNT=$(docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u root -prootpass -N \
+            -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME'" 2>/dev/null || echo "0")
+          if [[ "$TABLE_COUNT" =~ ^[0-9]+$ ]] && (( TABLE_COUNT > 0 )); then
+            echo "  Import completed ($TABLE_COUNT tables detected in \`$DB_NAME\`)"
+          else
+            echo "  ERROR: Import verification failed (no tables detected in \`$DB_NAME\`)"
+            docker compose -f tests/docker-compose.visual.yml logs --tail=20 db 2>/dev/null || true
+            exit 1
           fi
         else
           echo "  No database dump found, skipping DB import"
@@ -278,12 +286,18 @@ tasks:
             wp-visual wp-config-gen.sh
           if [[ -n "$WP_PREFIX" ]]; then
             echo "  Restoring table prefix '$WP_PREFIX' from backup..."
+            # Escape WP_PREFIX for sed: \, &, /
+            WP_PREFIX_SED="${WP_PREFIX//\\/\\\\}"
+            WP_PREFIX_SED="${WP_PREFIX_SED//&/\\&}"
+            WP_PREFIX_SED="${WP_PREFIX_SED//\//\\/}"
             docker compose -f tests/docker-compose.visual.yml exec -T wp-visual \
-              sed -i "s/^\$table_prefix\s*=\s*'\(.*\)';/\$table_prefix = '$WP_PREFIX';/" /var/www/html/wp-config.php 2>/dev/null || true
+              sed -i "s/^\$table_prefix\s*=\s*'\(.*\)';/\$table_prefix = '$WP_PREFIX_SED';/" /var/www/html/wp-config.php 2>/dev/null || true
           fi
           echo "  Updating site URL for local test environment..."
+          # Escape WP_PREFIX for SQL identifier (backticks)
+          WP_PREFIX_SQL="${WP_PREFIX//\`/}"
           docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u root -prootpass \
-            -e "UPDATE \`$DB_NAME\`.\`${WP_PREFIX}options\` SET option_value='https://localhost:8443' WHERE option_name IN ('siteurl','home')" 2>/dev/null || true
+            -e "UPDATE \`$DB_NAME\`.\`${WP_PREFIX_SQL}options\` SET option_value='https://localhost:8443' WHERE option_name IN ('siteurl','home')" 2>/dev/null || true
           docker compose -f tests/docker-compose.visual.yml exec -T wp-visual wp cache flush 2>/dev/null || true
         else
           echo "  No WordPress files found, skipping file copy"
