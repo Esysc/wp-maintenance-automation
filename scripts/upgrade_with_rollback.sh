@@ -43,6 +43,7 @@ RUN_STAGING_REHEARSAL_BEFORE_UPGRADE=${RUN_STAGING_REHEARSAL_BEFORE_UPGRADE:-no}
 ASK_CONFIRM_BEFORE_UPGRADE=${ASK_CONFIRM_BEFORE_UPGRADE:-yes}
 FORCE_UPGRADE=${FORCE_UPGRADE:-no}
 AUTO_RESTORE_ON_FAILURE=${AUTO_RESTORE_ON_FAILURE:-yes}
+HEALTHCHECK_INSECURE=${HEALTHCHECK_INSECURE:-}
 APPLY_CONFIGS_ON_ROLLBACK=${APPLY_CONFIGS_ON_ROLLBACK:-no}
 DELETE_REMOTE_FILES_ON_ROLLBACK=${DELETE_REMOTE_FILES_ON_ROLLBACK:-no}
 REMOTE_SUDO_ON_ROLLBACK=${REMOTE_SUDO_ON_ROLLBACK:-no}
@@ -291,7 +292,7 @@ ensure_remote_wp_cli() {
   log "  WP-CLI not found on remote, installing..."
   installed=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "
     set -e
-    curl -fS -o /tmp/wp-cli.phar https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+    curl -fsS -o /tmp/wp-cli.phar https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
     chmod +x /tmp/wp-cli.phar
     for dest in /usr/local/bin/wp ~/bin/wp ~/.local/bin/wp; do
       mkdir -p \"\$(dirname \"\$dest\")\" 2>/dev/null
@@ -407,7 +408,7 @@ run_healthcheck() {
   local attempt code
   attempt=1
   while [[ "$attempt" -le "$HEALTHCHECK_RETRIES" ]]; do
-    code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" -k "$HEALTHCHECK_URL" || true)
+    code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" ${HEALTHCHECK_INSECURE:+-k} "$HEALTHCHECK_URL" || true)
     if [[ "$code" == "$HEALTHCHECK_EXPECT_CODE" ]]; then
       log "Healthcheck passed with status $code on attempt $attempt"
       if [[ -n "$EXTRA_POST_UPGRADE_CHECK_CMD" ]]; then

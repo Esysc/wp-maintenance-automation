@@ -15,5 +15,5 @@ cd /var/www/html
 # (credentials like DB_NAME/USER/PASSWORD stay as they were from the backup)
 if [[ -f wp-config.php ]]; then
   db_host=$(escape_sed_repl "${WORDPRESS_DB_HOST:-db:3306}")
-  sed -i "s/^define(\\s*'DB_HOST',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_HOST', '${db_host}');/" wp-config.php
+  sed -i "s/^define([[:space:]]*'DB_HOST',[[:space:]]*'\(.*\)'[[:space:]]*);\$/define('DB_HOST', '${db_host}');/" wp-config.php
 fi

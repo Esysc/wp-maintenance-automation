@@ -27,11 +27,11 @@ read_db_config() {
     ssh_opts_base+=(-o "Port=${WP_SSH_PORT}")
   fi
 
-  if out=$(ssh "${ssh_opts_base[@]}" "$remote_host" "grep -E \"^define\\(\\s*'DB_(NAME|USER|PASSWORD|HOST)'\" \"$remote_wp_config\"" 2> /dev/null); then
-    DB_NAME=$(echo "$out" | sed -n "s/^define(\\s*'DB_NAME',[[:space:]]*'\(.*\)'[[:space:]]*);/\1/p" | sed "s/\\\\'/'/g")
-    DB_USER=$(echo "$out" | sed -n "s/^define(\\s*'DB_USER',[[:space:]]*'\(.*\)'[[:space:]]*);/\1/p" | sed "s/\\\\'/'/g")
-    DB_PASSWORD=$(echo "$out" | sed -n "s/^define(\\s*'DB_PASSWORD',[[:space:]]*'\(.*\)'[[:space:]]*);/\1/p" | sed "s/\\\\'/'/g")
-    DB_HOST=$(echo "$out" | sed -n "s/^define(\\s*'DB_HOST',[[:space:]]*'\(.*\)'[[:space:]]*);/\1/p" | sed "s/\\\\'/'/g")
+  if out=$(ssh "${ssh_opts_base[@]}" "$remote_host" "grep -E \"^define\\([[:space:]]*'DB_(NAME|USER|PASSWORD|HOST)'\" \"$remote_wp_config\"" 2> /dev/null); then
+    DB_NAME=$(echo "$out" | sed -n "s/^define([[:space:]]*'DB_NAME',[[:space:]]*'\(.*\)'[[:space:]]*);/\1/p" | sed "s/\\\\'/'/g")
+    DB_USER=$(echo "$out" | sed -n "s/^define([[:space:]]*'DB_USER',[[:space:]]*'\(.*\)'[[:space:]]*);/\1/p" | sed "s/\\\\'/'/g")
+    DB_PASSWORD=$(echo "$out" | sed -n "s/^define([[:space:]]*'DB_PASSWORD',[[:space:]]*'\(.*\)'[[:space:]]*);/\1/p" | sed "s/\\\\'/'/g")
+    DB_HOST=$(echo "$out" | sed -n "s/^define([[:space:]]*'DB_HOST',[[:space:]]*'\(.*\)'[[:space:]]*);/\1/p" | sed "s/\\\\'/'/g")
   elif ssh "${ssh_opts_base[@]}" "$remote_host" "cd '$remote_wp_root' && wp config get DB_NAME --type=constant >/dev/null 2>&1"; then
     out=$(ssh "${ssh_opts_base[@]}" "$remote_host" "cd '$remote_wp_root' && wp config get DB_NAME --type=constant 2>/dev/null; wp config get DB_USER --type=constant 2>/dev/null; wp config get DB_PASSWORD --type=constant 2>/dev/null; wp config get DB_HOST --type=constant 2>/dev/null")
     DB_NAME=$(echo "$out" | sed -n '1p')

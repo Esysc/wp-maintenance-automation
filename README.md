@@ -378,7 +378,7 @@ ASK_CONFIRM_BEFORE_UPGRADE=no task upgrade
 ```
 
 > **TTY note**: The `task` commands auto-detect TTY and use `-it` locally or `-i` in CI/non-interactive runners.
-> If you run Docker directly, use `-i` and pipe the SSH key through stdin:
+> If you run Docker directly, mount the SSH key as a volume:
 > ```bash
 > ASK_CONFIRM_BEFORE_UPGRADE=no docker run --rm -i \
 >   -v "$PWD/.env:/app/.env:ro" \
@@ -387,7 +387,8 @@ ASK_CONFIRM_BEFORE_UPGRADE=no task upgrade
 >   -v "$PWD/backup_artifacts:/app/backup_artifacts" \
 >   -v "$PWD/var:/app/var" \
 >   -v "$PWD/scripts:/app/scripts:ro" \
->   wp-backup bash -c 'cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/upgrade_with_rollback.sh' < ~/.ssh/id_ed25519
+>   -v "$HOME/.ssh/id_ed25519:/root/.ssh-key-source:ro" \
+>   wp-backup bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cp /root/.ssh-key-source /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/upgrade_with_rollback.sh'
 > ```
 
 Available CI-friendly env vars (see `scripts/upgrade_with_rollback.sh` for defaults):
@@ -399,6 +400,7 @@ Available CI-friendly env vars (see `scripts/upgrade_with_rollback.sh` for defau
 | `RUN_STAGING_REHEARSAL_BEFORE_UPGRADE` | `no` | `no` (or `yes` if you have a staging target) |
 | `AUTO_RESTORE_ON_FAILURE` | `yes` | `yes` (auto rollback) |
 | `FORCE_UPGRADE` | `no` | `no` |
+| `HEALTHCHECK_INSECURE` | *(empty)* | set `yes` if healthcheck URL uses self-signed TLS |
 
 Scheduling example (cron / CI scheduler):
 
