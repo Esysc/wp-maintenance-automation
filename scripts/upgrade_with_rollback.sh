@@ -103,7 +103,8 @@ derive_healthcheck_url() {
   local detected
   detected=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS option get home 2>/dev/null" || true)
   if [[ -n "$detected" ]]; then
-    HEALTHCHECK_URL="$detected"
+    # Take only the last line (actual URL); PHP notices may precede it
+    HEALTHCHECK_URL=$(echo "$detected" | grep -o 'https\?://[^[:space:]]*' | tail -1)
   fi
 }
 
@@ -280,8 +281,69 @@ run_upgrade_approval() {
   esac
 }
 
+ensure_remote_wp_cli() {
+  local found installed
+  found=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "command -v $WP_CLI_BIN 2>/dev/null" || true)
+  if [[ -n "$found" ]]; then
+    log "  WP-CLI found at '$found' on remote"
+    return 0
+  fi
+  log "  WP-CLI not found on remote, installing..."
+  installed=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "
+    set -e
+    curl -fS -o /tmp/wp-cli.phar https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+    chmod +x /tmp/wp-cli.phar
+    for dest in /usr/local/bin/wp ~/bin/wp ~/.local/bin/wp; do
+      mkdir -p \"\$(dirname \"\$dest\")\" 2>/dev/null
+      if mv /tmp/wp-cli.phar \"\$dest\" 2>/dev/null; then
+        echo \"\$dest\"
+        exit 0
+      fi
+    done
+    echo \"FAILED\"
+  " 2>&1 | tee -a "$LOG_FILE" | tail -1)
+  if [[ "$installed" == "FAILED" ]]; then
+    log "  Failed to install WP-CLI on remote (no writable directory)"
+    return 1
+  fi
+  local bin_path="$installed"
+  # Use explicit path since ~/bin/ may not be in non-interactive SSH PATH
+  WP_CLI_BIN="$bin_path"
+  log "  WP-CLI installed at '$bin_path' (using explicit path for non-interactive SSH)"
+  # Verify
+  if ! ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "test -x '$bin_path'" 2> /dev/null; then
+    log "  WP-CLI install verification failed"
+    return 1
+  fi
+  php_bin=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "
+    set -e
+    for p in php-8.2 php8.2 php82 php-8.3 php8.3 php83 php-8.1 php8.1 php81 php-8.0 php8.0 php80 php7.4 php74; do
+      if command -v \"\$p\" >/dev/null 2>&1 && \"\$p\" -r 'echo PHP_OK;' 2>/dev/null; then
+        echo \"\$p\"
+        exit 0
+      fi
+    done
+    if php -n -r 'echo PHP_OK;' 2>/dev/null; then
+      echo \"php -n\"
+      exit 0
+    fi
+    echo \"php\"
+  " 2>&1 | tee -a "$LOG_FILE" | tail -1) || true
+  if [[ -n "$php_bin" && "$php_bin" != "php" ]]; then
+    WP_CLI_BIN="$php_bin $bin_path"
+    log "  Using PHP binary '$php_bin' to invoke WP-CLI (bypassing version selector)"
+  fi
+  return 0
+}
+
 run_upgrade() {
   log "Starting WordPress full upgrade with WP-CLI..."
+
+  ensure_remote_wp_cli || {
+    UPGRADE_STATUS="failed"
+    FINAL_REASON="wp-cli not available on remote"
+    return 1
+  }
 
   if ! remote_wp "core update" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
@@ -345,7 +407,7 @@ run_healthcheck() {
   local attempt code
   attempt=1
   while [[ "$attempt" -le "$HEALTHCHECK_RETRIES" ]]; do
-    code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" "$HEALTHCHECK_URL" || true)
+    code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" -k "$HEALTHCHECK_URL" || true)
     if [[ "$code" == "$HEALTHCHECK_EXPECT_CODE" ]]; then
       log "Healthcheck passed with status $code on attempt $attempt"
       if [[ -n "$EXTRA_POST_UPGRADE_CHECK_CMD" ]]; then

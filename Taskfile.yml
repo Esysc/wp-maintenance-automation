@@ -81,6 +81,7 @@ tasks:
           -e RESTIC_REPOSITORY_FALLBACK=/restic_repo \
           -v "{{.RESTIC_REPO}}:/restic_repo" \
           -v "{{.SSH_KEY}}:/root/.ssh-key-source:ro" \
+          -e ASK_CONFIRM_BEFORE_UPGRADE=no \
           {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cp /root/.ssh-key-source /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/upgrade_with_rollback.sh'
 
   rehearse:
