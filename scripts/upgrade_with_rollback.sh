@@ -43,6 +43,7 @@ RUN_STAGING_REHEARSAL_BEFORE_UPGRADE=${RUN_STAGING_REHEARSAL_BEFORE_UPGRADE:-no}
 ASK_CONFIRM_BEFORE_UPGRADE=${ASK_CONFIRM_BEFORE_UPGRADE:-yes}
 FORCE_UPGRADE=${FORCE_UPGRADE:-no}
 AUTO_RESTORE_ON_FAILURE=${AUTO_RESTORE_ON_FAILURE:-yes}
+HEALTHCHECK_INSECURE=${HEALTHCHECK_INSECURE:-}
 APPLY_CONFIGS_ON_ROLLBACK=${APPLY_CONFIGS_ON_ROLLBACK:-no}
 DELETE_REMOTE_FILES_ON_ROLLBACK=${DELETE_REMOTE_FILES_ON_ROLLBACK:-no}
 REMOTE_SUDO_ON_ROLLBACK=${REMOTE_SUDO_ON_ROLLBACK:-no}
@@ -85,14 +86,14 @@ write_report() {
   } > "$REPORT_FILE"
 }
 
-SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 if [[ -n "${WP_SSH_PORT:-}" ]]; then
   SSH_OPTS+=(-o "Port=${WP_SSH_PORT}")
 fi
 
 remote_wp() {
   local wp_args="$1"
-  ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS $wp_args"
+  stdbuf -oL ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS $wp_args"
 }
 
 derive_healthcheck_url() {
@@ -103,7 +104,8 @@ derive_healthcheck_url() {
   local detected
   detected=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $WP_CLI_BIN $WP_CLI_EXTRA_ARGS option get home 2>/dev/null" || true)
   if [[ -n "$detected" ]]; then
-    HEALTHCHECK_URL="$detected"
+    # Take only the last line (actual URL); PHP notices may precede it
+    HEALTHCHECK_URL=$(echo "$detected" | grep -o 'https\?://[^[:space:]]*' | tail -1)
   fi
 }
 
@@ -112,7 +114,7 @@ run_backup() {
   snapshot_file="$RUN_DIR/backup_snapshot_id.txt"
 
   log "Starting backup..."
-  if BACKUP_SNAPSHOT_FILE="$snapshot_file" bash "$BACKUP_SCRIPT" >> "$LOG_FILE" 2>&1; then
+  if BACKUP_SNAPSHOT_FILE="$snapshot_file" stdbuf -oL bash "$BACKUP_SCRIPT" 2>&1 | tee -a "$LOG_FILE"; then
     BACKUP_STATUS="ok"
 
     if [[ -s "$snapshot_file" ]]; then
@@ -149,7 +151,7 @@ run_backup_validation() {
     APPLY_FILES=no \
     APPLY_CONFIGS=no \
     CONFIRM_RESTORE=no \
-    bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" >> "$LOG_FILE" 2>&1; then
+    stdbuf -oL bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" 2>&1 | tee -a "$LOG_FILE"; then
     BACKUP_VALIDATION_STATUS="failed"
     FINAL_REASON="backup validation restore extract failed"
     return 1
@@ -229,7 +231,7 @@ run_staging_rehearsal() {
   fi
 
   log "Running staging rehearsal from snapshot ${BACKUP_SNAPSHOT_ID:-latest}..."
-  if bash "$STAGING_REHEARSAL_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" >> "$LOG_FILE" 2>&1; then
+  if stdbuf -oL bash "$STAGING_REHEARSAL_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" 2>&1 | tee -a "$LOG_FILE"; then
     STAGING_REHEARSAL_STATUS="ok"
     return 0
   fi
@@ -280,47 +282,108 @@ run_upgrade_approval() {
   esac
 }
 
+ensure_remote_wp_cli() {
+  local found installed
+  found=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "command -v $WP_CLI_BIN 2>/dev/null" || true)
+  if [[ -n "$found" ]]; then
+    log "  WP-CLI found at '$found' on remote"
+    return 0
+  fi
+  log "  WP-CLI not found on remote, installing..."
+  installed=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "
+    set -e
+    curl -fsS -o /tmp/wp-cli.phar https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+    chmod +x /tmp/wp-cli.phar
+    for dest in /usr/local/bin/wp ~/bin/wp ~/.local/bin/wp; do
+      mkdir -p \"\$(dirname \"\$dest\")\" 2>/dev/null
+      if mv /tmp/wp-cli.phar \"\$dest\" 2>/dev/null; then
+        echo \"\$dest\"
+        exit 0
+      fi
+    done
+    echo \"FAILED\"
+  " 2>&1 | tee -a "$LOG_FILE" | tail -1)
+  if [[ "$installed" == "FAILED" ]]; then
+    log "  Failed to install WP-CLI on remote (no writable directory)"
+    return 1
+  fi
+  local bin_path="$installed"
+  # Use explicit path since ~/bin/ may not be in non-interactive SSH PATH
+  WP_CLI_BIN="$bin_path"
+  log "  WP-CLI installed at '$bin_path' (using explicit path for non-interactive SSH)"
+  # Verify
+  if ! ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "test -x '$bin_path'" 2> /dev/null; then
+    log "  WP-CLI install verification failed"
+    return 1
+  fi
+  php_bin=$(ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "
+    set -e
+    for p in php-8.2 php8.2 php82 php-8.3 php8.3 php83 php-8.1 php8.1 php81 php-8.0 php8.0 php80 php7.4 php74; do
+      if command -v \"\$p\" >/dev/null 2>&1 && \"\$p\" -r 'echo PHP_OK;' 2>/dev/null; then
+        echo \"\$p\"
+        exit 0
+      fi
+    done
+    if php -n -r 'echo PHP_OK;' 2>/dev/null; then
+      echo \"php -n\"
+      exit 0
+    fi
+    echo \"php\"
+  " 2>&1 | tee -a "$LOG_FILE" | tail -1) || true
+  if [[ -n "$php_bin" && "$php_bin" != "php" ]]; then
+    WP_CLI_BIN="$php_bin $bin_path"
+    log "  Using PHP binary '$php_bin' to invoke WP-CLI (bypassing version selector)"
+  fi
+  return 0
+}
+
 run_upgrade() {
   log "Starting WordPress full upgrade with WP-CLI..."
 
-  if ! remote_wp "core update" >> "$LOG_FILE" 2>&1; then
+  ensure_remote_wp_cli || {
+    UPGRADE_STATUS="failed"
+    FINAL_REASON="wp-cli not available on remote"
+    return 1
+  }
+
+  if ! remote_wp "core update" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="core update failed"
     return 1
   fi
 
-  if ! remote_wp "plugin update --all" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "plugin update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="plugin update failed"
     return 1
   fi
 
-  if ! remote_wp "theme update --all" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "theme update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="theme update failed"
     return 1
   fi
 
   # Keep language packs aligned with updated core/plugins/themes.
-  if ! remote_wp "language core update" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "language core update" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="language core update failed"
     return 1
   fi
 
-  if ! remote_wp "language plugin update --all" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "language plugin update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="language plugin update failed"
     return 1
   fi
 
-  if ! remote_wp "language theme update --all" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "language theme update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="language theme update failed"
     return 1
   fi
 
-  if ! remote_wp "core update-db" >> "$LOG_FILE" 2>&1; then
+  if ! remote_wp "core update-db" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="core update-db failed"
     return 1
@@ -345,13 +408,13 @@ run_healthcheck() {
   local attempt code
   attempt=1
   while [[ "$attempt" -le "$HEALTHCHECK_RETRIES" ]]; do
-    code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" "$HEALTHCHECK_URL" || true)
+    code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time "$HEALTHCHECK_TIMEOUT_SECONDS" ${HEALTHCHECK_INSECURE:+-k} "$HEALTHCHECK_URL" || true)
     if [[ "$code" == "$HEALTHCHECK_EXPECT_CODE" ]]; then
       log "Healthcheck passed with status $code on attempt $attempt"
       if [[ -n "$EXTRA_POST_UPGRADE_CHECK_CMD" ]]; then
         log "Running extra post-upgrade check command"
         # shellcheck disable=SC2046
-        if ! ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
+        if ! ssh "${SSH_OPTS[@]}" "$WP_SSH_USER@$WP_SSH_HOST" "cd '$WP_ROOT' && $EXTRA_POST_UPGRADE_CHECK_CMD" 2>&1 | tee -a "$LOG_FILE"; then
           HEALTH_STATUS="failed"
           FINAL_REASON="extra post-upgrade check failed"
           return 1
@@ -387,7 +450,7 @@ run_rollback() {
     APPLY_CONFIGS="$APPLY_CONFIGS_ON_ROLLBACK" \
     DELETE_REMOTE_FILES="$DELETE_REMOTE_FILES_ON_ROLLBACK" \
     REMOTE_SUDO="$REMOTE_SUDO_ON_ROLLBACK" \
-    bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" >> "$LOG_FILE" 2>&1; then
+    stdbuf -oL bash "$RESTORE_SCRIPT" "${BACKUP_SNAPSHOT_ID:-latest}" 2>&1 | tee -a "$LOG_FILE"; then
     ROLLBACK_STATUS="ok"
     return 0
   fi

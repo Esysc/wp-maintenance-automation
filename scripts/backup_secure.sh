@@ -31,7 +31,7 @@ source "$SCRIPT_DIR/lib.sh"
 
 umask 077
 
-SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 if [[ -n "${WP_SSH_PORT:-}" ]]; then
   SSH_OPTS+=(-o "Port=${WP_SSH_PORT}")
 fi

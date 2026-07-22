@@ -1,27 +1,63 @@
 ARG WP_VERSION=6.6.2
-FROM wordpress:${WP_VERSION}-php8.1-apache
+ARG WP_PHP_VERSION=8.2
+
+FROM debian:bookworm-slim
+
+ARG WP_VERSION
+ARG WP_PHP_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-    openssh-server \
-    sudo \
+    apache2 \
+    ca-certificates \
+    curl \
     mariadb-client \
+    openssh-server \
     rsync \
+    sudo \
+    openssl \
+    php${WP_PHP_VERSION} \
+    php${WP_PHP_VERSION}-mysqli \
+    php${WP_PHP_VERSION}-curl \
+    php${WP_PHP_VERSION}-gd \
+    php${WP_PHP_VERSION}-mbstring \
+    php${WP_PHP_VERSION}-xml \
+    php${WP_PHP_VERSION}-zip \
+    libapache2-mod-php${WP_PHP_VERSION} \
  && rm -rf /var/lib/apt/lists/*
+
+RUN a2enmod rewrite ssl
+RUN mkdir -p /etc/apache2/ssl \
+ && openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+    -keyout /etc/apache2/ssl/localhost.key \
+    -out /etc/apache2/ssl/localhost.crt \
+    -subj "/CN=localhost/O=Visual Test/C=CH" \
+    -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+
+COPY tests/apache-default-ssl.conf /etc/apache2/sites-available/default-ssl.conf
+RUN a2ensite default-ssl
 
 RUN curl -fS -o /usr/local/bin/wp-cli https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
  && chmod +x /usr/local/bin/wp-cli \
  && printf '#!/bin/bash\n/usr/local/bin/wp-cli --allow-root --path=/var/www/html "$@"\n' > /usr/local/bin/wp \
  && chmod +x /usr/local/bin/wp
 
-RUN mkdir -p /root/.ssh \
+RUN curl -fS -o /tmp/wordpress.tar.gz "https://wordpress.org/wordpress-${WP_VERSION}.tar.gz" \
+ && mkdir -p /var/www/html \
+ && tar xzf /tmp/wordpress.tar.gz -C /var/www/html --strip-components=1 \
+ && rm /tmp/wordpress.tar.gz
+
+RUN mkdir -p /root/.ssh /run/sshd /etc/ssh/sshd_config.d \
  && chmod 700 /root/.ssh
 
 RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config \
  && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config
 
 COPY tests/wp-entrypoint.sh /usr/local/bin/wp-entrypoint.sh
-RUN chmod +x /usr/local/bin/wp-entrypoint.sh
+COPY tests/wp-config-gen.sh /usr/local/bin/wp-config-gen.sh
+RUN chmod +x /usr/local/bin/wp-entrypoint.sh /usr/local/bin/wp-config-gen.sh
 
 ENTRYPOINT ["wp-entrypoint.sh"]
-CMD ["apache2-foreground"]
+CMD []

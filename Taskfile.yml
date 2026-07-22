@@ -16,6 +16,9 @@ vars:
   RESTIC_REPO:
     sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true
   BACKUP_ARTIFACTS_DIR: backup_artifacts
+  DOCKER_TTY_FLAGS:
+    sh: |
+      if [ -t 0 ] && [ -t 1 ]; then echo "-it"; else echo "-i"; fi
 
 tasks:
   default:
@@ -32,7 +35,7 @@ tasks:
     desc: "Run a secure backup via Docker (requires .env, SSH keys, restic password)"
     cmds:
       - |
-        docker run --rm -i \
+        docker run --rm {{.DOCKER_TTY_FLAGS}} \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
@@ -41,7 +44,8 @@ tasks:
           -v "$(pwd)/scripts:/app/scripts:ro" \
           -e RESTIC_REPOSITORY_FALLBACK=/restic_repo \
           -v "{{.RESTIC_REPO}}:/restic_repo" \
-          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/backup_secure.sh' < "{{.SSH_KEY}}"
+          -v "{{.SSH_KEY}}:/root/.ssh-key-source:ro" \
+          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cp /root/.ssh-key-source /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/backup_secure.sh'
 
   restore:
     desc: "Restore from a snapshot via Docker (pass SNAPSHOT=<id>; requires .env)"
@@ -49,7 +53,7 @@ tasks:
       SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
     cmds:
       - |
-        docker run --rm -i \
+        docker run --rm {{.DOCKER_TTY_FLAGS}} \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
@@ -59,13 +63,14 @@ tasks:
           -v "$(pwd)/scripts:/app/scripts:ro" \
           -e RESTIC_REPOSITORY_FALLBACK=/restic_repo \
           -v "{{.RESTIC_REPO}}:/restic_repo" \
-          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/restore_secure.sh "{{.SNAPSHOT}}"' < "{{.SSH_KEY}}"
+          -v "{{.SSH_KEY}}:/root/.ssh-key-source:ro" \
+          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cp /root/.ssh-key-source /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/restore_secure.sh "{{.SNAPSHOT}}"'
 
   upgrade:
     desc: "Full upgrade with backup, healthcheck, and auto-rollback via Docker"
     cmds:
       - |
-        docker run --rm -i \
+        docker run --rm {{.DOCKER_TTY_FLAGS}} \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
@@ -75,7 +80,9 @@ tasks:
           -v "$(pwd)/scripts:/app/scripts:ro" \
           -e RESTIC_REPOSITORY_FALLBACK=/restic_repo \
           -v "{{.RESTIC_REPO}}:/restic_repo" \
-          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/upgrade_with_rollback.sh' < "{{.SSH_KEY}}"
+          -v "{{.SSH_KEY}}:/root/.ssh-key-source:ro" \
+          -e ASK_CONFIRM_BEFORE_UPGRADE=no \
+          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cp /root/.ssh-key-source /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/upgrade_with_rollback.sh'
 
   rehearse:
     desc: "Rehearse upgrade on staging from a snapshot via Docker (pass SNAPSHOT=<id>)"
@@ -83,7 +90,7 @@ tasks:
       SNAPSHOT: '{{.SNAPSHOT | default "latest"}}'
     cmds:
       - |
-        docker run --rm -i \
+        docker run --rm {{.DOCKER_TTY_FLAGS}} \
           -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
           -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
           -e RESTIC_PASSWORD_FILE=/app/restic_pass \
@@ -93,7 +100,8 @@ tasks:
           -v "$(pwd)/scripts:/app/scripts:ro" \
           -e RESTIC_REPOSITORY_FALLBACK=/restic_repo \
           -v "{{.RESTIC_REPO}}:/restic_repo" \
-          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cat > /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/staging_rehearsal.sh "{{.SNAPSHOT}}"' < "{{.SSH_KEY}}"
+          -v "{{.SSH_KEY}}:/root/.ssh-key-source:ro" \
+          {{.DOCKER_IMAGE}} bash -c 'mkdir -p /root/.ssh && chmod 700 /root/.ssh && cp /root/.ssh-key-source /root/.ssh/id_rsa && chmod 600 /root/.ssh/id_rsa && exec /app/scripts/staging_rehearsal.sh "{{.SNAPSHOT}}"'
 
   restic:init:
     desc: "Initialize a local restic repository via Docker (mounts RESTIC_REPOSITORY from .env)"
@@ -137,6 +145,20 @@ tasks:
           -v "{{.REPO}}:/restic_repo" \
           {{.DOCKER_IMAGE}} restic --repo /restic_repo check
 
+  restic:unlock:
+    desc: "Remove stale locks from local restic repo via Docker (mounts RESTIC_REPOSITORY from .env)"
+    vars:
+      REPO:
+        sh: grep -E '^RESTIC_REPOSITORY=' .env 2>/dev/null | cut -d '=' -f2- | tr -d '"' | tr -d "'" | xargs || true
+    cmds:
+      - |
+        docker run --rm \
+          -v "$(pwd)/{{.ENV_FILE}}:/app/.env:ro" \
+          -v "$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}:/app/restic_pass:ro" \
+          -e RESTIC_PASSWORD_FILE=/app/restic_pass \
+          -v "{{.REPO}}:/restic_repo" \
+          {{.DOCKER_IMAGE}} restic --repo /restic_repo unlock
+
   test:
     desc: "Run the end-to-end test suite via Docker Compose (supports WP_INITIAL_VERSION, WP_UPGRADE_VERSION)"
     dir: tests
@@ -156,6 +178,7 @@ tasks:
         echo "Restoring snapshot '{{.SNAPSHOT}}' to local environment..."
 
         echo "Step 1: Extracting snapshot locally..."
+        rm -rf {{.RESTORE_DIR}}
         mkdir -p {{.RESTORE_DIR}}
         export RESTIC_REPOSITORY={{.REPO}}
         RESTIC_PASS_HOST="$HOME/{{.RESTIC_PASSWORD_FILE_HOST}}"
@@ -166,62 +189,149 @@ tasks:
         restic --repo "$RESTIC_REPOSITORY" restore "{{.SNAPSHOT}}" --target "{{.RESTORE_DIR}}"
 
         echo "Step 2: Detecting versions from backup manifest..."
-        MANIFEST=$(ls -1t {{.RESTORE_DIR}}/*/backup_artifacts/*/manifest.txt 2>/dev/null | head -n1 || true)
+        MANIFEST=$(ls -1t {{.RESTORE_DIR}}/backup_artifacts/*/manifest.txt 2>/dev/null | head -n1 || true)
         WP_VERSION=""
+        WP_PHP_VERSION=""
         DB_VERSION_RAW=""
+        DB_NAME=""
+        DB_USER=""
+        DB_PASS=""
         if [[ -n "$MANIFEST" ]]; then
           WP_VERSION=$(grep '^wp_version=' "$MANIFEST" | cut -d '=' -f2-)
           DB_VERSION_RAW=$(grep '^db_version=' "$MANIFEST" | cut -d '=' -f2-)
           echo "  Found backup: WordPress $WP_VERSION, DB $DB_VERSION_RAW"
-          # Determine DB image and tag from version string
           if echo "$DB_VERSION_RAW" | grep -qi maria; then
             DB_IMAGE="mariadb"
-            DB_TAG=$(echo "$DB_VERSION_RAW" | sed 's/\([0-9]\+\.[0-9]\+\).*/\1/')
+            DB_TAG=$(echo "$DB_VERSION_RAW" | cut -d. -f1-2)
           else
             DB_IMAGE="mysql"
-            DB_TAG=$(echo "$DB_VERSION_RAW" | sed 's/\([0-9]\+\.[0-9]\+\).*/\1/')
+            DB_TAG=$(echo "$DB_VERSION_RAW" | cut -d. -f1-2)
           fi
         fi
-        export WP_VERSION="${WP_VERSION:-latest}"
+        # Read DB credentials from the backup's wp-config.php
+        WP_DIR=$(ls -1td {{.RESTORE_DIR}}/backup_artifacts/*/wp 2>/dev/null | head -n1 || true)
+        if [[ -n "$WP_DIR" && -d "$WP_DIR" && -f "$WP_DIR/wp-config.php" ]]; then
+          DB_NAME=$(grep "^define.*DB_NAME" "$WP_DIR/wp-config.php" 2>/dev/null | sed "s/.*define.*'DB_NAME',[[:space:]]*'\(.*\)'.*/\1/")
+          DB_USER=$(grep "^define.*DB_USER" "$WP_DIR/wp-config.php" 2>/dev/null | sed "s/.*define.*'DB_USER',[[:space:]]*'\(.*\)'.*/\1/")
+          DB_PASS=$(grep "^define.*DB_PASSWORD" "$WP_DIR/wp-config.php" 2>/dev/null | sed "s/.*define.*'DB_PASSWORD',[[:space:]]*'\(.*\)'.*/\1/")
+          echo "  Read DB credentials from backup: $DB_NAME / $DB_USER"
+        fi
+        DB_NAME="${DB_NAME:-wordpress}"
+        DB_USER="${DB_USER:-wpuser}"
+        DB_PASS="${DB_PASS:-wppass}"
+        # Fallback when WP_VERSION is empty or explicitly "unknown"
+        if [[ "$WP_VERSION" == "unknown" || -z "$WP_VERSION" ]]; then
+          WP_VERSION=""
+        fi
+        export WP_VERSION="${WP_VERSION:-7.0.2}"
+        # Use WP_PHP_VERSION from .env, fallback to 8.2
+        WP_PHP_VERSION=$(grep -m1 '^WP_PHP_VERSION=' ../.env 2>/dev/null | cut -d= -f2 || true)
+        WP_PHP_VERSION="${WP_PHP_VERSION:-8.2}"
+        export WP_PHP_VERSION
         export DB_IMAGE="${DB_IMAGE:-mariadb}"
         export DB_TAG="${DB_TAG:-10.11}"
-        echo "  Using $DB_IMAGE:$DB_TAG for database, wordpress:$WP_VERSION for application"
+        echo "  Using $DB_IMAGE:$DB_TAG for database, WordPress $WP_VERSION on PHP $WP_PHP_VERSION"
 
         echo "Step 3: Starting WordPress $WP_VERSION + $DB_IMAGE:$DB_TAG..."
         docker compose -f tests/docker-compose.visual.yml down -v
         docker compose -f tests/docker-compose.visual.yml up -d
 
         echo "Step 4: Waiting for MySQL to be ready..."
-        until docker compose -f tests/docker-compose.visual.yml exec -T db mysqladmin ping -h localhost -u root -prootpass > /dev/null 2>&1; do
+        until docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u root -prootpass -e "SELECT 1" > /dev/null 2>&1; do
           sleep 2
         done
 
+        echo "  Creating database user matching backup credentials..."
+        docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u root -prootpass \
+          -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME//\`/}\`; CREATE USER IF NOT EXISTS '${DB_USER//\'/''}'@'%' IDENTIFIED BY '${DB_PASS//\'/''}'; GRANT ALL ON \`${DB_NAME//\`/}\`.* TO '${DB_USER//\'/''}'@'%'; FLUSH PRIVILEGES;"
+
         echo "Step 5: Importing database..."
-        DB_DUMP=$(ls -1t {{.RESTORE_DIR}}/*/backup_artifacts/*/db/*.gz 2>/dev/null | head -n1 || true)
+        DB_DUMP=$(ls -1t {{.RESTORE_DIR}}/backup_artifacts/*/db/*.gz 2>/dev/null | head -n1 || true)
         if [[ -n "$DB_DUMP" ]]; then
           echo "  Importing from: $DB_DUMP"
-          gunzip -c "$DB_DUMP" | docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u wpuser -pwppass wordpress
+          docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u root -prootpass \
+            -e "SET GLOBAL max_allowed_packet=1073741824; SET GLOBAL net_read_timeout=600; SET GLOBAL net_write_timeout=600;"
+          if ! gunzip -c "$DB_DUMP" | \
+            docker compose -f tests/docker-compose.visual.yml exec -T db \
+              mysql --max-allowed-packet=1G -u root -prootpass "$DB_NAME"; then
+            echo "  ERROR: Database import failed"
+            docker compose -f tests/docker-compose.visual.yml logs --tail=20 db 2>/dev/null || true
+            exit 1
+          fi
+          TABLE_COUNT=$(docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u root -prootpass -N \
+            -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME'" 2>/dev/null || echo "0")
+          if [[ "$TABLE_COUNT" =~ ^[0-9]+$ ]] && (( TABLE_COUNT > 0 )); then
+            echo "  Import completed ($TABLE_COUNT tables detected in \`$DB_NAME\`)"
+          else
+            echo "  ERROR: Import verification failed (no tables detected in \`$DB_NAME\`)"
+            docker compose -f tests/docker-compose.visual.yml logs --tail=20 db 2>/dev/null || true
+            exit 1
+          fi
         else
           echo "  No database dump found, skipping DB import"
         fi
 
         echo "Step 6: Copying WordPress files..."
-        WP_DIR=$(ls -1td {{.RESTORE_DIR}}/*/backup_artifacts/*/wp 2>/dev/null | head -n1 || true)
         if [[ -n "$WP_DIR" && -d "$WP_DIR" ]]; then
           echo "  Copying files from: $WP_DIR"
-          docker compose -f tests/docker-compose.visual.yml cp -r "$WP_DIR/." wp-visual:/var/www/html/
+          docker compose -f tests/docker-compose.visual.yml cp "$WP_DIR/." wp-visual:/var/www/html/
+          echo "  Removing default Apache index.html to avoid overriding WordPress..."
+          docker compose -f tests/docker-compose.visual.yml exec -T wp-visual rm -f /var/www/html/index.html
+          echo "  Regenerating wp-config.php for visual test environment..."
+          WP_PREFIX=$(grep "table_prefix" "$WP_DIR/wp-config.php" 2>/dev/null | sed "s/.*table_prefix[[:space:]]*=[[:space:]]*'\(.*\)';.*/\1/" || echo "")
+          docker compose -f tests/docker-compose.visual.yml exec -T \
+            -e WORDPRESS_DB_NAME="$DB_NAME" \
+            -e WORDPRESS_DB_USER="$DB_USER" \
+            -e WORDPRESS_DB_PASSWORD="$DB_PASS" \
+            -e WORDPRESS_DB_HOST="db:3306" \
+            wp-visual wp-config-gen.sh
+          if [[ -n "$WP_PREFIX" ]]; then
+            echo "  Restoring table prefix '$WP_PREFIX' from backup..."
+            # Escape WP_PREFIX for sed: \, &, /
+            WP_PREFIX_SED="${WP_PREFIX//\\/\\\\}"
+            WP_PREFIX_SED="${WP_PREFIX_SED//&/\\&}"
+            WP_PREFIX_SED="${WP_PREFIX_SED//\//\\/}"
+            docker compose -f tests/docker-compose.visual.yml exec -T wp-visual \
+              sed -i "s/^\$table_prefix\s*=\s*'\(.*\)';/\$table_prefix = '$WP_PREFIX_SED';/" /var/www/html/wp-config.php 2>/dev/null || true
+          fi
+          echo "  Updating site URL for local test environment..."
+          # Escape WP_PREFIX for SQL identifier (backticks)
+          WP_PREFIX_SQL="${WP_PREFIX//\`/}"
+          docker compose -f tests/docker-compose.visual.yml exec -T db mysql -u root -prootpass \
+            -e "UPDATE \`$DB_NAME\`.\`${WP_PREFIX_SQL}options\` SET option_value='https://localhost:8443' WHERE option_name IN ('siteurl','home')" 2>/dev/null || true
+          docker compose -f tests/docker-compose.visual.yml exec -T wp-visual wp cache flush 2>/dev/null || true
         else
           echo "  No WordPress files found, skipping file copy"
         fi
 
         echo ""
+        echo "Step 7: Upgrading WordPress to latest version..."
+        echo "  (this may take a few minutes for plugin/theme downloads)"
+        TARGET_WP_VERSION="${WP_UPGRADE_VERSION:-latest}"
+        WP_VERSION_BEFORE=$(docker compose -f tests/docker-compose.visual.yml exec -T wp-visual wp core version 2>/dev/null || echo "unknown")
+        echo "  Current core: $WP_VERSION_BEFORE → target: $TARGET_WP_VERSION"
+        echo "  Upgrading core..."
+        docker compose -f tests/docker-compose.visual.yml exec -T wp-visual wp core update --version="$TARGET_WP_VERSION" 2>/dev/null || echo "  (core already at latest)"
+        echo "  Upgrading plugins..."
+        docker compose -f tests/docker-compose.visual.yml exec -T wp-visual wp plugin update --all 2>/dev/null || echo "  (plugins already at latest)"
+        echo "  Upgrading themes..."
+        docker compose -f tests/docker-compose.visual.yml exec -T wp-visual wp theme update --all 2>/dev/null || echo "  (themes already at latest)"
+        echo "  Updating database..."
+        docker compose -f tests/docker-compose.visual.yml exec -T wp-visual wp core update-db 2>/dev/null || echo "  (DB already at latest)"
+        WP_VERSION_AFTER=$(docker compose -f tests/docker-compose.visual.yml exec -T wp-visual wp core version 2>/dev/null || echo "unknown")
+        echo "  Upgrade complete: $WP_VERSION_BEFORE → $WP_VERSION_AFTER"
+
+        echo ""
         echo "========================================="
-        echo "Visual test environment is ready!"
-        echo "Access your site at: http://localhost:8080"
+        echo "  Visual test environment is fully ready!"
+        echo "  Access your site at: https://localhost:8443"
+        echo "  Core: $WP_VERSION_BEFORE → $WP_VERSION_AFTER"
+        echo "  (Browser: accept self-signed cert warning once)"
         echo "========================================="
         echo ""
         echo "Press Ctrl+C to stop the containers and clean up."
-        trap 'docker compose -f tests/docker-compose.visual.yml down -v; exit' INT TERM
+        cleanup_visual() { docker compose -f tests/docker-compose.visual.yml down -v; exit; }
+        trap 'cleanup_visual' INT TERM 2>/dev/null || true
         docker compose -f tests/docker-compose.visual.yml logs -f
 
   artifacts:cleanup:

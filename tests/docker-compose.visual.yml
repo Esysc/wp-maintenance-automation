@@ -8,6 +8,13 @@ services:
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wpuser
       MYSQL_PASSWORD: wppass
+    command:
+      - --max-allowed-packet=1G
+      - --net-read-timeout=600
+      - --net-write-timeout=600
+      - --innodb-log-file-size=1G
+      - --innodb-buffer-pool-size=1G
+      - --innodb-flush-log-at-trx-commit=0
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpass"]
       interval: 5s
@@ -16,7 +23,12 @@ services:
       - db_data:/var/lib/mysql
 
   wp-visual:
-    image: wordpress:${WP_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.wp
+      args:
+        WP_VERSION: ${WP_VERSION:-7.0.2}
+        WP_PHP_VERSION: ${WP_PHP_VERSION:-8.2}
     depends_on:
       db:
         condition: service_healthy
@@ -28,6 +40,7 @@ services:
       WORDPRESS_TABLE_PREFIX: wp_
     ports:
       - "8080:80"
+      - "8443:443"
     volumes:
       - wp_data:/var/www/html
 

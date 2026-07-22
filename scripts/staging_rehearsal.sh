@@ -77,7 +77,7 @@ write_report() {
   } > "$REPORT_FILE"
 }
 
-STAGING_SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+STAGING_SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15)
 if [[ -n "${STAGING_WP_SSH_PORT:-}" ]]; then
   STAGING_SSH_OPTS+=(-o "Port=${STAGING_WP_SSH_PORT}")
 fi
@@ -111,7 +111,7 @@ run_restore_to_staging() {
     APPLY_CONFIGS="$STAGING_APPLY_CONFIGS" \
     DELETE_REMOTE_FILES="$STAGING_DELETE_REMOTE_FILES" \
     REMOTE_SUDO="$STAGING_REMOTE_SUDO" \
-    bash "$RESTORE_SCRIPT" "$SNAPSHOT" >> "$LOG_FILE" 2>&1; then
+    stdbuf -oL bash "$RESTORE_SCRIPT" "$SNAPSHOT" 2>&1 | tee -a "$LOG_FILE"; then
     RESTORE_STATUS="ok"
     return 0
   fi
@@ -124,43 +124,43 @@ run_restore_to_staging() {
 run_upgrade_on_staging() {
   log "Running full WordPress upgrade on staging..."
 
-  if ! staging_wp "core update" >> "$LOG_FILE" 2>&1; then
+  if ! staging_wp "core update" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="staging core update failed"
     return 1
   fi
 
-  if ! staging_wp "plugin update --all" >> "$LOG_FILE" 2>&1; then
+  if ! staging_wp "plugin update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="staging plugin update failed"
     return 1
   fi
 
-  if ! staging_wp "theme update --all" >> "$LOG_FILE" 2>&1; then
+  if ! staging_wp "theme update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="staging theme update failed"
     return 1
   fi
 
-  if ! staging_wp "language core update" >> "$LOG_FILE" 2>&1; then
+  if ! staging_wp "language core update" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="staging language core update failed"
     return 1
   fi
 
-  if ! staging_wp "language plugin update --all" >> "$LOG_FILE" 2>&1; then
+  if ! staging_wp "language plugin update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="staging language plugin update failed"
     return 1
   fi
 
-  if ! staging_wp "language theme update --all" >> "$LOG_FILE" 2>&1; then
+  if ! staging_wp "language theme update --all" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="staging language theme update failed"
     return 1
   fi
 
-  if ! staging_wp "core update-db" >> "$LOG_FILE" 2>&1; then
+  if ! staging_wp "core update-db" 2>&1 | tee -a "$LOG_FILE"; then
     UPGRADE_STATUS="failed"
     FINAL_REASON="staging core update-db failed"
     return 1
@@ -190,7 +190,7 @@ run_staging_healthcheck() {
       if [[ -n "$STAGING_EXTRA_POST_UPGRADE_CHECK_CMD" ]]; then
         log "Running extra staging post-upgrade check command"
         # shellcheck disable=SC2046
-        if ! ssh "${STAGING_SSH_OPTS[@]}" "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_EXTRA_POST_UPGRADE_CHECK_CMD" >> "$LOG_FILE" 2>&1; then
+        if ! ssh "${STAGING_SSH_OPTS[@]}" "$STAGING_WP_SSH_USER@$STAGING_WP_SSH_HOST" "cd '$STAGING_WP_ROOT' && $STAGING_EXTRA_POST_UPGRADE_CHECK_CMD" 2>&1 | tee -a "$LOG_FILE"; then
           HEALTH_STATUS="failed"
           FINAL_REASON="extra staging post-upgrade check failed"
           return 1
