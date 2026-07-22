@@ -6,6 +6,8 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-22
+
 ### Added
 - Task runner (`Taskfile.yml`) with `task build`, `task backup`, `task restore`, `task upgrade`, `task rehearse`, `task test`, `task test:visual`, and restic management commands.
 - Visual test environment (`task test:visual SNAPSHOT=latest`) — restores a snapshot into a local Docker WordPress stack for manual inspection. Now runs HTTPS on `https://localhost:8443` and upgrades WordPress core, plugins, and themes to verify upgrade success.
